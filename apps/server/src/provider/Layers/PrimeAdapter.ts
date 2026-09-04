@@ -2600,7 +2600,12 @@ export function makePrimeAdapter(
 
         const failedToolDetail = ctx.compactionFailedToolDetail;
         if (failedToolDetail !== undefined) {
-          return yield* failPrimeCompaction(ctx, itemId, "Context compaction failed", failedToolDetail);
+          return yield* failPrimeCompaction(
+            ctx,
+            itemId,
+            "Context compaction failed",
+            failedToolDetail,
+          );
         }
 
         // Success: thread.state.changed is the single terminal signal —

@@ -431,6 +431,7 @@ import {
   deriveContextWindowSelectionStatus,
   deriveCumulativeCostUsd,
   deriveLatestContextWindowState,
+  deriveModelContextWindowSnapshot,
   deriveSelectedContextWindowSnapshot,
 } from "../lib/contextWindow";
 import { useComposerVoiceController } from "./chat/useComposerVoiceController";
@@ -9739,12 +9740,17 @@ export default function ChatView({
         : (activeContextWindow ??
           (selectedProvider === "claudeAgent"
             ? deriveSelectedContextWindowSnapshot(composerTraitSelection.contextWindow)
-            : null)),
+            : selectedProvider === "prime"
+              ? // Prime's catalog carries each model's window, so the ring can
+                // sit at 0% before the first turn like the Claude selection does.
+                deriveModelContextWindowSnapshot(selectedRuntimeModel?.contextWindowTokens)
+              : null)),
     [
       activeContextWindow,
       activeContextWindowState.invalidatedByCompaction,
       composerTraitSelection.contextWindow,
       selectedProvider,
+      selectedRuntimeModel,
     ],
   );
   const contextWindowSelectionStatus = useMemo(

@@ -383,6 +383,7 @@ describe("parsePrimeModelRegistry", () => {
       description: "cerebras · 131K context · vision",
       upstreamProviderId: "cerebras",
       upstreamProviderName: "Cerebras",
+      contextWindowTokens: 131_072,
       defaultReasoningEffort: "high",
     });
     expect(models.find((model) => model.slug === "anthropic/claude-fable-5-1")).toMatchObject({

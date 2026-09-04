@@ -294,6 +294,9 @@ export const ProviderModelDescriptor = Schema.Struct({
   supportsAutoMode: Schema.optional(Schema.Boolean),
   contextWindowOptions: Schema.optional(Schema.Array(ProviderContextWindowDescriptor)),
   defaultContextWindow: Schema.optional(TrimmedNonEmptyString),
+  // The model's fixed window in tokens, for catalogs that report one (Prime).
+  // Lets the composer show an empty context meter before the first turn.
+  contextWindowTokens: Schema.optional(Schema.Number),
   modelVariants: Schema.optional(Schema.Array(ProviderModelVariantDescriptor)),
 });
 export type ProviderModelDescriptor = typeof ProviderModelDescriptor.Type;

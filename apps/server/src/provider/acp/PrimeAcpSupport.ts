@@ -551,6 +551,7 @@ export function toPrimeProviderModelDescriptor(
     description: describePrimeModel(model),
     upstreamProviderId: model.provider,
     upstreamProviderName: formatPrimeUpstreamProviderName(model.provider),
+    ...(model.contextWindow !== undefined ? { contextWindowTokens: model.contextWindow } : {}),
     ...(supportedDescriptors.length > 0
       ? {
           supportedReasoningEfforts: supportedDescriptors.map((descriptor) => ({

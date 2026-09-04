@@ -7,6 +7,7 @@ import {
   deriveCumulativeCostUsd,
   deriveLatestContextWindowState,
   deriveLatestContextWindowSnapshot,
+  deriveModelContextWindowSnapshot,
   deriveSelectedContextWindowSnapshot,
   formatContextWindowSelectionLabel,
   formatContextWindowTokens,
@@ -230,6 +231,26 @@ describe("contextWindow", () => {
     expect(snapshot?.usedTokens).toBe(0);
     expect(snapshot?.maxTokens).toBe(1_000_000);
     expect(snapshot?.usedPercentage).toBe(0);
+  });
+
+  it("creates an empty snapshot from a model's numeric window before runtime usage arrives", () => {
+    const snapshot = deriveModelContextWindowSnapshot(131_072);
+
+    expect(snapshot).toMatchObject({
+      usedTokens: 0,
+      maxTokens: 131_072,
+      remainingTokens: 131_072,
+      usedPercentage: 0,
+      compactsAutomatically: false,
+    });
+    expect(deriveContextWindowMeterDisplay(snapshot!)).toMatchObject({
+      usedPercentageLabel: "0%",
+      tokenUsageLabel: "0",
+      hasReliableTokenRatio: true,
+    });
+    expect(deriveModelContextWindowSnapshot(undefined)).toBeNull();
+    expect(deriveModelContextWindowSnapshot(0)).toBeNull();
+    expect(deriveModelContextWindowSnapshot(Number.NaN)).toBeNull();
   });
 
   it("derives meter display labels without inventing token ratios", () => {

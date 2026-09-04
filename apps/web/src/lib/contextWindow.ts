@@ -228,7 +228,28 @@ export function deriveSelectedContextWindowSnapshot(
   if (maxTokens === null) {
     return null;
   }
+  return deriveEmptyContextWindowSnapshot(maxTokens);
+}
 
+/**
+ * Empty meter for a model whose window is known in tokens (Prime's catalog
+ * reports one per model), so the ring is present at 0% before the first turn
+ * exactly as it is for a Claude context-window selection.
+ */
+export function deriveModelContextWindowSnapshot(
+  contextWindowTokens: number | null | undefined,
+): ContextWindowSnapshot | null {
+  if (
+    typeof contextWindowTokens !== "number" ||
+    !Number.isFinite(contextWindowTokens) ||
+    contextWindowTokens <= 0
+  ) {
+    return null;
+  }
+  return deriveEmptyContextWindowSnapshot(Math.round(contextWindowTokens));
+}
+
+function deriveEmptyContextWindowSnapshot(maxTokens: number): ContextWindowSnapshot {
   return {
     usedTokens: 0,
     usedPercent: null,

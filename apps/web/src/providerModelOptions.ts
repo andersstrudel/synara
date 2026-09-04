@@ -40,6 +40,8 @@ export interface ProviderModelOption {
   description?: string;
   upstreamProviderId?: string;
   upstreamProviderName?: string;
+  /** Fixed model window in tokens, when the provider catalog reports one. */
+  contextWindowTokens?: number;
 }
 
 export interface ProviderModelOptionGroup {
@@ -145,6 +147,7 @@ export function mergeDynamicModelOptions(input: {
     description?: string | null | undefined;
     upstreamProviderId?: string | null | undefined;
     upstreamProviderName?: string | null | undefined;
+    contextWindowTokens?: number | null | undefined;
   }>;
 }): ReadonlyArray<ProviderModelOption & { isCustom?: boolean }> {
   const staticNameBySlug = new Map(input.staticOptions.map((model) => [model.slug, model.name]));
@@ -196,6 +199,11 @@ export function mergeDynamicModelOptions(input: {
         : {}),
       ...(dynamicModel.upstreamProviderName?.trim()
         ? { upstreamProviderName: dynamicModel.upstreamProviderName.trim() }
+        : {}),
+      ...(typeof dynamicModel.contextWindowTokens === "number" &&
+      Number.isFinite(dynamicModel.contextWindowTokens) &&
+      dynamicModel.contextWindowTokens > 0
+        ? { contextWindowTokens: Math.round(dynamicModel.contextWindowTokens) }
         : {}),
     });
   }

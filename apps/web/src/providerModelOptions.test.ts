@@ -75,6 +75,28 @@ describe("formatProviderModelOptionName", () => {
 });
 
 describe("mergeDynamicModelOptions", () => {
+  it("carries a discovered model's numeric context window onto the option", () => {
+    expect(
+      mergeDynamicModelOptions({
+        provider: "prime",
+        staticOptions: [],
+        dynamicModels: [
+          {
+            slug: "cerebras/qwen-3.8-27b",
+            name: "Qwen 3.8 27B",
+            upstreamProviderId: "cerebras",
+            upstreamProviderName: "Cerebras",
+            contextWindowTokens: 131_072,
+          },
+          { slug: "cerebras/gemma-4-31b-it", name: "Gemma 4 31B IT", contextWindowTokens: 0 },
+        ],
+      }).map((option) => [option.slug, option.contextWindowTokens]),
+    ).toEqual([
+      ["cerebras/qwen-3.8-27b", 131_072],
+      ["cerebras/gemma-4-31b-it", undefined],
+    ]);
+  });
+
   it("does not offer Pi Anthropic models when discovery only returns local models", () => {
     expect(
       mergeDynamicModelOptions({

@@ -2,11 +2,15 @@
  * Tails a Prime Agent session file and reports token-usage updates as Prime
  * appends entries.
  *
- * The file watcher is the primary trigger; a poll (fast while a turn is in
- * flight, slow otherwise) covers coalesced or dropped watch events. Reads are
- * incremental from a byte offset, so only appended bytes are parsed after the
- * initial catch-up, and reports are throttled so a fast provider (Cerebras
- * answers several times a second) cannot flood the runtime event stream.
+ * Two triggers share one reader: a file watcher and a poll (fast while a turn
+ * is in flight, slow otherwise). On macOS the watcher (FSEvents) is what fires
+ * first and the poll only covers coalesced events. Prime rewrites the file
+ * once through a temp file and `rename` (its first persisted assistant
+ * message), which an inotify watch on Linux does not survive, so there the
+ * poll is the trigger that matters after that rewrite. Reads are incremental
+ * from a byte offset, so only appended bytes are parsed after the initial
+ * catch-up, and reports are throttled so a fast provider (Cerebras answers
+ * several times a second) cannot flood the runtime event stream.
  *
  * @module PrimeSessionUsageTail
  */
@@ -54,16 +58,20 @@ export interface PrimeSessionUsageTail {
    * interrupted. Never fails: read errors are treated as "nothing new".
    */
   readonly run: Effect.Effect<void>;
-  /** Reads and reports whatever was appended since the last read, now. */
+  /**
+   * Reads and reports whatever was appended since the last read, now. Before
+   * `run` has caught up, this read is the catch-up (one report, no boundary
+   * reporting), never a live tail of the whole file.
+   */
   readonly flush: Effect.Effect<void>;
 }
 
 interface PrimeSessionReadResult {
   readonly change: PrimeSessionUsageChange;
   readonly entry: unknown;
+  /** True when the read folded the file from its start: the first read, or a replaced file. */
+  readonly catchUp: boolean;
 }
-
-const NO_CHANGE: PrimeSessionReadResult = { change: "none", entry: undefined };
 
 function strongerChange(
   current: PrimeSessionUsageChange,
@@ -95,30 +103,36 @@ export const makePrimeSessionUsageTail = (
     let offset = 0;
     let lastReportAt = 0;
     let stopped = false;
+    // False until a read has consumed the file from its start. Whichever
+    // caller (run's catch-up or an early flush) gets the read lock first
+    // performs that catch-up; the file's history is folded exactly once and
+    // never reported entry by entry.
+    let caughtUp = false;
 
-    // `onBoundary` (live tails only) makes a compaction entry a report boundary:
-    // the pending usage is reported first, then the compaction with the fresh
-    // estimate, so the meter sees "compacted" between the two readings even
-    // when Prime wrote both within one read.
+    // `onBoundary` (live reads only) makes a compaction entry a report
+    // boundary: the pending usage is reported first, then the compaction with
+    // the fresh estimate, so the meter sees "compacted" between the two
+    // readings even when Prime wrote both within one read. A catch-up never
+    // reports boundaries: its compactions are history, not news.
     const readAppended = (
-      onBoundary:
-        | ((change: PrimeSessionUsageChange, entry: unknown) => Effect.Effect<void>)
-        | undefined,
-    ): Effect.Effect<PrimeSessionReadResult> =>
+      onBoundary: (change: PrimeSessionUsageChange, entry: unknown) => Effect.Effect<void>,
+    ): Effect.Effect<PrimeSessionReadResult | undefined> =>
       Effect.gen(function* () {
         const info = yield* options.fileSystem.stat(options.file);
         const size = Number(info.size);
         if (!Number.isFinite(size)) {
-          return NO_CHANGE;
+          return undefined;
         }
+        let catchUp = !caughtUp;
         if (size < offset) {
           // Prime only appends; a shrunken file means it was replaced. Start over.
           state = createPrimeSessionUsageState();
           splitter.reset();
           offset = 0;
+          catchUp = true;
         }
         if (size === offset) {
-          return NO_CHANGE;
+          return { change: "none", entry: undefined, catchUp } satisfies PrimeSessionReadResult;
         }
         const file = yield* options.fileSystem.open(options.file);
         yield* file.seek(offset, "start");
@@ -137,8 +151,7 @@ export const makePrimeSessionUsageTail = (
             if (parsed === undefined) {
               continue;
             }
-            const isBoundary =
-              onBoundary !== undefined && readPrimeCompactionEntry(parsed) !== undefined;
+            const isBoundary = !catchUp && readPrimeCompactionEntry(parsed) !== undefined;
             if (isBoundary && change !== "none") {
               yield* onBoundary(change, entry);
               change = "none";
@@ -156,12 +169,12 @@ export const makePrimeSessionUsageTail = (
             entry = parsed;
           }
         }
-        return { change, entry };
+        return { change, entry, catchUp };
       }).pipe(
         Effect.scoped,
         // A momentary stat/open failure (file being rotated, permissions) is
         // retried by the next wake-up; there is nothing to surface per tick.
-        Effect.orElseSucceed(() => NO_CHANGE),
+        Effect.orElseSucceed(() => undefined),
       );
 
     const throttle = Effect.suspend(() => {
@@ -169,27 +182,30 @@ export const makePrimeSessionUsageTail = (
       return waitMs > 0 ? Effect.sleep(waitMs) : Effect.void;
     });
 
-    const readAndReport = (reason: PrimeSessionUsageUpdateReason | undefined) =>
-      readLock.withPermits(1)(
-        Effect.gen(function* () {
-          if (stopped) {
-            return;
-          }
-          const report = (change: PrimeSessionUsageChange, entry: unknown) =>
-            options
-              .onUpdate({ state, reason: reason ?? change, entry })
-              .pipe(Effect.tap(() => Effect.sync(() => (lastReportAt = Date.now()))));
-          const result = yield* readAppended(reason === "catch-up" ? undefined : report);
-          if (result.change === "none") {
-            return;
-          }
-          yield* throttle;
-          yield* report(result.change, result.entry);
-        }),
-      );
+    const readAndReport = readLock.withPermits(1)(
+      Effect.gen(function* () {
+        if (stopped) {
+          return;
+        }
+        const report = (reason: PrimeSessionUsageUpdateReason, entry: unknown) =>
+          options
+            .onUpdate({ state, reason, entry })
+            .pipe(Effect.tap(() => Effect.sync(() => (lastReportAt = Date.now()))));
+        const result = yield* readAppended(report);
+        if (result === undefined) {
+          return;
+        }
+        caughtUp = true;
+        if (result.change === "none") {
+          return;
+        }
+        yield* throttle;
+        yield* report(result.catchUp ? "catch-up" : result.change, result.entry);
+      }),
+    );
 
     const run = Effect.gen(function* () {
-      yield* readAndReport("catch-up");
+      yield* readAndReport;
       yield* Stream.runForEach(options.fileSystem.watch(options.file), () =>
         Queue.offer(wake, undefined),
       ).pipe(Effect.ignoreCause({ log: true }), Effect.forkScoped);
@@ -202,7 +218,7 @@ export const makePrimeSessionUsageTail = (
       yield* Effect.forever(
         Effect.gen(function* () {
           yield* Queue.take(wake);
-          yield* readAndReport(undefined);
+          yield* readAndReport;
         }),
       );
     }).pipe(
@@ -214,5 +230,5 @@ export const makePrimeSessionUsageTail = (
       ),
     );
 
-    return { run, flush: readAndReport(undefined) } satisfies PrimeSessionUsageTail;
+    return { run, flush: readAndReport } satisfies PrimeSessionUsageTail;
   });

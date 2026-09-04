@@ -247,8 +247,8 @@ export function releaseJsonLd(entry: ChangelogEntry) {
     url: absoluteUrl(`/changelog/v${entry.version}`),
     description: `What's new in Synara ${entry.version}: ${highlights}.`,
     image: absoluteUrl(entry.heroImage ?? SITE_IMAGES.og),
-    datePublished: date,
-    dateModified: date,
+    // An "Unreleased" block has no publish date yet, so the fields are omitted.
+    ...(date === undefined ? {} : { datePublished: date, dateModified: date }),
     author: { "@id": `${SITE_URL}/#organization` },
     publisher: { "@id": `${SITE_URL}/#organization` },
     about: { "@id": `${SITE_URL}/#app` },

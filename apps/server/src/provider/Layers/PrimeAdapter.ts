@@ -112,6 +112,7 @@ import {
 } from "../acp/AcpTurnIdleWatchdog.ts";
 import {
   buildPrimeModelFlag,
+  canonicalPrimeSessionCwd,
   detectNewPrimeSession,
   makePrimeAcpRuntime,
   mapPrimeCommands,
@@ -202,8 +203,11 @@ const PRIME_COMPACT_CANCEL_WAIT_MS = 10_000;
 const PRIME_COMPACT_OUTCOME_QUIET_MS = 200;
 const PRIME_COMPACT_OUTCOME_MAX_WAIT_MS = 2_000;
 // Prime's ACP mode never sends usage_update; context usage is tailed from the
-// session file instead. The watcher is primary; the poll (fast while a turn
-// or compaction is in flight, slow otherwise) covers coalesced watch events.
+// session file instead. The tail wakes on a file watch and on this poll (fast
+// while a turn or compaction is in flight, slow otherwise). On macOS the
+// watch fires first and the poll only covers coalesced events; on Linux the
+// inotify watch is lost when Prime rewrites the file through a rename (its
+// first persisted assistant message), so the poll is what drives it from then on.
 const PRIME_SESSION_USAGE_ACTIVE_POLL_MS = 250;
 const PRIME_SESSION_USAGE_IDLE_POLL_MS = 2_000;
 // Prime writes its compaction entry before the /compact prompt answers, so
@@ -215,6 +219,7 @@ const PRIME_SESSION_USAGE_COMPACTION_HOLD_MS = 1_000;
 // A failed registry probe for a model's context window is not retried on
 // every usage line; the dial keeps working without maxTokens meanwhile.
 const PRIME_CONTEXT_WINDOW_DISCOVERY_RETRY_MS = 60_000;
+const PRIME_SESSION_FILE_USAGE_SOURCE = "prime.session-file.entry";
 const PRIME_SESSION_FILE_USAGE_METHOD = "session/file";
 
 const PRIME_PLAN_MODE_PROMPT_PREFIX = [
@@ -262,6 +267,14 @@ interface PrimeAdapterLiveOptions {
 interface PrimeSessionDetection {
   readonly snapshot: PrimeSessionFileSnapshot;
   readonly spawnedAt: number;
+  /** Key of the sessions-dir + cwd lock the detection runs under (see primeSessionLocks). */
+  readonly lockKey: string;
+}
+
+/** A sessions-dir + cwd lock and how many starts or retries currently reference it. */
+interface PrimeSessionLockEntry {
+  readonly semaphore: Semaphore.Semaphore;
+  users: number;
 }
 
 interface PrimeStartedRuntime {
@@ -426,6 +439,11 @@ export function scopePrimeToolCallStateForTurn(
   toolCall: AcpToolCallState,
 ): AcpToolCallState {
   return scopeAcpToolCallStateForTurn(PROVIDER, turnId, toolCall);
+}
+
+/** Key of the lock a fresh start holds: Prime's sessions dir plus the canonical session cwd. */
+function primeSessionLockKey(sessionsDir: string, cwdKey: string): string {
+  return `${sessionsDir}\0${cwdKey}`;
 }
 
 function setPrimeDiscoveryCacheEntry<Entry extends { readonly expiresAt: number }>(
@@ -661,19 +679,51 @@ export function makePrimeAdapter(
     >();
     const primeContextWindowRetryAt = new Map<string, number>();
     const withThreadLock = yield* makeAcpThreadLock();
-    // One lock per Prime sessions dir. A fresh start holds it from its
-    // pre-spawn snapshot until session-file detection settles, so two fresh
-    // starts in the same dir can never both claim the earliest new file.
-    const sessionsDirLocks = new Map<string, Semaphore.Semaphore>();
-    const sessionsDirLock = (sessionsDir: string): Semaphore.Semaphore => {
-      const existing = sessionsDirLocks.get(sessionsDir);
-      if (existing !== undefined) {
-        return existing;
+    // One lock per Prime sessions dir and session cwd. A fresh start holds it
+    // from its pre-spawn snapshot until session-file detection settles, so two
+    // fresh starts in the same cwd can never both claim the earliest new file.
+    // Prime keeps every project's sessions in one dir (getDefaultSessionDir
+    // ignores cwd) but detection only binds a file whose header cwd matches,
+    // so starts in different cwds have nothing to serialize. Entries are
+    // reference-counted and dropped once no start or retry holds them, the
+    // way providerLifecycleCoordinator keeps its per-thread locks.
+    const primeSessionLocks = new Map<string, PrimeSessionLockEntry>();
+    const referencePrimeSessionLock = (key: string): PrimeSessionLockEntry => {
+      let entry = primeSessionLocks.get(key);
+      if (entry === undefined) {
+        entry = { semaphore: Semaphore.makeUnsafe(1), users: 0 };
+        primeSessionLocks.set(key, entry);
       }
-      const lock = Semaphore.makeUnsafe(1);
-      sessionsDirLocks.set(sessionsDir, lock);
-      return lock;
+      entry.users += 1;
+      return entry;
     };
+    const releasePrimeSessionLock = (key: string, entry: PrimeSessionLockEntry) =>
+      Effect.sync(() => {
+        entry.users -= 1;
+        if (entry.users === 0 && primeSessionLocks.get(key) === entry) {
+          primeSessionLocks.delete(key);
+        }
+      });
+    // Holds the lock for the rest of the calling scope.
+    const acquirePrimeSessionLock = (key: string): Effect.Effect<void, never, Scope.Scope> =>
+      Effect.acquireRelease(
+        Effect.suspend(() => {
+          const entry = referencePrimeSessionLock(key);
+          return entry.semaphore.take(1).pipe(Effect.as(entry));
+        }),
+        (entry) =>
+          entry.semaphore.release(1).pipe(Effect.andThen(releasePrimeSessionLock(key, entry))),
+      ).pipe(Effect.asVoid);
+    const withPrimeSessionLock = <A, E, R>(
+      key: string,
+      effect: Effect.Effect<A, E, R>,
+    ): Effect.Effect<A, E, R> =>
+      Effect.suspend(() => {
+        const entry = referencePrimeSessionLock(key);
+        return entry.semaphore
+          .withPermits(1)(effect)
+          .pipe(Effect.ensuring(releasePrimeSessionLock(key, entry)));
+      });
     // Prime session ids already bound to other live contexts; detection must
     // never re-bind one of them to a second thread.
     const claimedPrimeSessionIds = (except: PrimeSessionContext): ReadonlySet<string> => {
@@ -1010,14 +1060,18 @@ export function makePrimeAdapter(
       });
 
     // Context window for the model that produced a usage line, from Prime's
-    // registry. Served from the discovery cache; a cold cache runs one probe
-    // (serialized and cached for five minutes like listModels), and a failed
-    // probe backs off so a busy turn never blocks on it repeatedly.
+    // registry. Served from the discovery cache while it is fresh (the same
+    // five minutes as listModels); a cold or expired cache runs one probe,
+    // and a failed probe backs off so a busy turn never blocks on it repeatedly.
     const resolvePrimeContextWindow = (ctx: PrimeSessionContext, model: PrimeSessionModel) =>
       Effect.gen(function* () {
         const slug = `${model.provider}/${model.modelId}`;
         const cacheKey = primeDiscoveryCacheKey(ctx.discoveryTarget);
-        const known = primeContextWindows.get(cacheKey)?.windows.get(slug);
+        const cached = primeContextWindows.get(cacheKey);
+        const known =
+          cached !== undefined && cached.expiresAt > Date.now()
+            ? cached.windows.get(slug)
+            : undefined;
         if (known !== undefined) {
           return known;
         }
@@ -1040,6 +1094,8 @@ export function makePrimeAdapter(
           return undefined;
         }
         primeContextWindowRetryAt.delete(cacheKey);
+        // Whatever the probe (or the models cache it was served from, which
+        // expires at the same moment) left behind is as fresh as listModels.
         return primeContextWindows.get(cacheKey)?.windows.get(slug);
       });
 
@@ -1093,9 +1149,11 @@ export function makePrimeAdapter(
             lifecycle: "item.completed",
             status: "completed",
             title: PRIME_COMPACTION_COMPLETED_TITLE,
+            // The timeline renders the title and detail as one line, so the
+            // detail continues the sentence: "Context compacted from N tokens".
             ...(autoCompaction.tokensBefore !== undefined
               ? {
-                  detail: `Compacted ${autoCompaction.tokensBefore.toLocaleString("en-US")} tokens of context`,
+                  detail: `from ${autoCompaction.tokensBefore.toLocaleString("en-US")} tokens`,
                 }
               : {}),
           });
@@ -1112,6 +1170,7 @@ export function makePrimeAdapter(
               threadId: ctx.threadId,
               turnId: ctx.compactingThread ? undefined : ctx.activeTurnId,
               usage,
+              source: PRIME_SESSION_FILE_USAGE_SOURCE,
               method: PRIME_SESSION_FILE_USAGE_METHOD,
               rawPayload,
             }),
@@ -1201,7 +1260,7 @@ export function makePrimeAdapter(
         yield* startPrimeSessionUsageTail(ctx, binding.file);
       });
 
-    // Callers hold the sessions-dir lock (see sessionsDirLock) while this runs.
+    // Callers hold the session lock for `detection.lockKey` while this runs.
     const detectPrimeSessionFile = (
       ctx: PrimeSessionContext,
       detection: PrimeSessionDetection,
@@ -1363,23 +1422,25 @@ export function makePrimeAdapter(
           });
 
           // A fresh start binds to the session file Prime writes at process
-          // start. Hold the sessions-dir lock for the rest of this start (the
-          // startSession scope releases it after detection) so overlapping
-          // fresh starts snapshot -> spawn -> detect one at a time.
+          // start. Hold the lock for this sessions dir and cwd for the rest of
+          // this start (the startSession scope releases it after detection) so
+          // overlapping fresh starts in one cwd snapshot -> spawn -> detect one
+          // at a time.
+          let sessionDetection: PrimeSessionDetection | undefined;
           if (resumeSessionId === undefined) {
-            const lock = sessionsDirLock(sessionsDir);
-            yield* Effect.acquireRelease(lock.take(1), () => lock.release(1));
+            const lockKey = primeSessionLockKey(
+              sessionsDir,
+              yield* Effect.promise(() => canonicalPrimeSessionCwd(cwd)),
+            );
+            yield* acquirePrimeSessionLock(lockKey);
+            // Snapshot the sessions dir before Prime can write its new file so
+            // the post-start detection has a stable "before" set.
+            sessionDetection = {
+              snapshot: yield* Effect.promise(() => snapshotPrimeSessionFiles(sessionsDir)),
+              spawnedAt: Date.now(),
+              lockKey,
+            };
           }
-
-          // Snapshot the sessions dir before Prime can write its new file so
-          // the post-start detection has a stable "before" set.
-          const sessionDetection: PrimeSessionDetection | undefined =
-            resumeSessionId === undefined
-              ? {
-                  snapshot: yield* Effect.promise(() => snapshotPrimeSessionFiles(sessionsDir)),
-                  spawnedAt: Date.now(),
-                }
-              : undefined;
 
           const startPrimeRuntime = (attemptScope: Scope.Closeable) =>
             Effect.gen(function* () {
@@ -2037,11 +2098,12 @@ export function makePrimeAdapter(
                 }
                 // A fresh start that could not locate Prime's session file
                 // retries now: the file has had a whole turn to appear. The
-                // dir lock keeps the retry from overlapping another fresh
-                // start's snapshot -> spawn -> detect window.
+                // session lock keeps the retry from overlapping another fresh
+                // start's snapshot -> spawn -> detect window in the same cwd.
                 const pendingDetection = ctx.sessionDetection;
                 if (pendingDetection !== undefined) {
-                  yield* sessionsDirLock(pendingDetection.snapshot.sessionsDir).withPermits(1)(
+                  yield* withPrimeSessionLock(
+                    pendingDetection.lockKey,
                     detectPrimeSessionFile(
                       ctx,
                       pendingDetection,

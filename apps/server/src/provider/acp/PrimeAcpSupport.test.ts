@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -15,6 +15,7 @@ import {
 } from "./AcpSessionRuntime.ts";
 import {
   buildPrimeAcpSpawnInput,
+  canonicalPrimeSessionCwd,
   buildPrimeModelFlag,
   buildPrimeRpcDiscoveryArgs,
   detectNewPrimeSession,
@@ -679,6 +680,20 @@ describe("Prime session files", () => {
     await mkdir(sessionsDir, { recursive: true });
     return { root, sessionsDir };
   }
+
+  it("keys a session cwd by its real path and falls back to the absolute path", async () => {
+    const { root } = await makeSessionsDir();
+    const cwd = path.join(root, "work");
+    await mkdir(cwd, { recursive: true });
+    const link = path.join(root, "work-link");
+    await symlink(cwd, link);
+    const key = await canonicalPrimeSessionCwd(cwd);
+    expect(await canonicalPrimeSessionCwd(link)).toBe(key);
+    expect(await canonicalPrimeSessionCwd(`${cwd}${path.sep}..${path.sep}work`)).toBe(key);
+    expect(await canonicalPrimeSessionCwd(path.join(root, "missing"))).toBe(
+      path.join(root, "missing"),
+    );
+  });
 
   it("parses the header line Prime writes at process start", () => {
     expect(

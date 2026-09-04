@@ -126,9 +126,13 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
     displayName: PROVIDER_DISPLAY_NAMES.prime,
     available: true,
     supportsNativeTurnSteering: false,
-    // Prime Agent brokers many upstream providers (Anthropic, OpenAI, Cerebras, ...);
-    // there is no single account-usage endpoint to surface, so no usage card.
-    usage: null,
+    // Prime brokers many upstream providers (Anthropic, OpenAI, Cerebras, ...)
+    // with no single quota API, so like Pi the card only reflects local
+    // sign-in. Credentials come from `/login` inside the `prime-agent` TUI.
+    usage: {
+      signInCommand: "prime-agent",
+      learnMoreHref: "https://www.trysynara.com/docs/providers/prime",
+    },
   },
 ] as const satisfies readonly ProviderDescriptor[]);
 

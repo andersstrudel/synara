@@ -30,6 +30,7 @@ const RuntimeEventRawSource = Schema.Literals([
   "acp.cursor.extension",
   "opencode.sdk.event",
   "pi.sdk.event",
+  "prime.session-file.entry",
 ]);
 export type RuntimeEventRawSource = typeof RuntimeEventRawSource.Type;
 

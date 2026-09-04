@@ -26,7 +26,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { ServerConfig } from "../../config.ts";
 import * as AcpErrors from "../acp/AcpErrors.ts";
 import type { AcpSessionRuntimeShape } from "../acp/AcpSessionRuntime.ts";
-import type { PrimeRpcDiscoveryResult } from "../acp/PrimeAcpSupport.ts";
+import { makePrimeAcpRuntime, type PrimeRpcDiscoveryResult } from "../acp/PrimeAcpSupport.ts";
 import { PrimeAdapter } from "../Services/PrimeAdapter.ts";
 import {
   buildPrimeResumeCursor,
@@ -1222,6 +1222,61 @@ describe("Prime adapter with the ACP mock agent", () => {
       ),
     );
   });
+
+  it("lets fresh starts in different cwds proceed without waiting on each other", async () => {
+    const agent = makePrimeMockAgent();
+    // Prime keeps every project's sessions in one dir; the other cwd shares it.
+    const otherCwd = path.join(agent.tempDir, "work-other");
+    mkdirSync(otherCwd, { recursive: true });
+    const completed: string[] = [];
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* PrimeAdapter;
+        const start = (threadId: ThreadId, cwd: string) =>
+          Effect.gen(function* () {
+            const session = yield* adapter.startSession({
+              provider: "prime",
+              threadId,
+              runtimeMode: "full-access",
+              cwd,
+            });
+            completed.push(cwd);
+            return session;
+          });
+
+        // The start in the mock's own cwd spawns nothing, so it holds its
+        // session lock for the whole detection window before giving up.
+        const stalledThreadId = ThreadId.makeUnsafe("thread-prime-lock-stalled");
+        const stalled = yield* Effect.forkChild(start(stalledThreadId, agent.cwd));
+        yield* Effect.sleep(100);
+        // A start in another cwd binds its own file at once.
+        const otherThreadId = ThreadId.makeUnsafe("thread-prime-lock-other");
+        const other = yield* start(otherThreadId, otherCwd);
+        expect(completed).toEqual([otherCwd]);
+        expect(parsePrimeResume(other.resumeCursor)?.sessionId).toBe(readSoleSessionId(agent));
+
+        const stalledSession = yield* Fiber.join(stalled);
+        expect(stalledSession.resumeCursor).toBeUndefined();
+        expect(completed).toEqual([otherCwd, agent.cwd]);
+
+        yield* adapter.stopSession(otherThreadId);
+        yield* adapter.stopSession(stalledThreadId);
+      }).pipe(
+        Effect.provide(
+          makePrimeAdapterTestLayer(
+            { binaryPath: agent.binaryPath, agentDir: agent.agentDir },
+            {
+              timeouts: { ...FAST_TIMEOUTS, sessionDetectMs: 2_000 },
+              makeAcpRuntime: (input) =>
+                input.cwd === agent.cwd
+                  ? Effect.succeed(makeLifecycleAcpRuntime())
+                  : makePrimeAcpRuntime(input),
+            },
+          ),
+        ),
+      ),
+    );
+  });
 });
 
 // Synthetic Prime session v3 entries for the session-file usage tests below.
@@ -1354,7 +1409,10 @@ describe("Prime session-file usage through the adapter", () => {
           toolUses: 1,
           compactsAutomatically: true,
         });
-        expect(usage.raw).toMatchObject({ source: "acp.jsonrpc", method: "session/file" });
+        expect(usage.raw).toMatchObject({
+          source: "prime.session-file.entry",
+          method: "session/file",
+        });
         // Raw payloads carry the entry minus its content.
         expect(usage.raw?.payload).toMatchObject({
           type: "message",
@@ -1374,6 +1432,71 @@ describe("Prime session-file usage through the adapter", () => {
 
         yield* adapter.stopSession(threadId);
         yield* waitFor((event) => event.type === "session.exited");
+        yield* Fiber.interrupt(collectorFiber);
+      }).pipe(
+        Effect.provide(
+          makePrimeAdapterTestLayer(
+            { binaryPath: agent.binaryPath, agentDir: agent.agentDir },
+            { runRpcDiscovery: discoveryStub() },
+          ),
+        ),
+      ),
+    );
+  });
+
+  it("bills sub-agent usage attributed to the turn into its totals and cost, not its context", async () => {
+    const agent = makePrimeMockAgent({
+      sessionScript: [
+        [
+          userEntry("u1", null, "hello prime"),
+          assistantEntry("a1", "u1", usageBlock(7_153, 378, 0.0471)),
+          // An RLM child ran under a1: Prime bills it to a1's usage block while
+          // a1's totalTokens (the context reading) stays as it was.
+          {
+            type: "child_usage_attributed",
+            id: "x1",
+            parentId: "a1",
+            timestamp: new Date().toISOString(),
+            targetId: "a1",
+            childUsage: usageBlock(9_000, 900, 0.02),
+            aggregateUsage: { ...usageBlock(16_153, 1_278, 0.0671), totalTokens: 7_531 },
+            origin: { kind: "rlm", depth: 1 },
+          },
+        ],
+      ],
+    });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* PrimeAdapter;
+        const { events, collector, waitFor } = collectRuntimeEvents(adapter.streamEvents);
+        const collectorFiber = yield* collector;
+        const threadId = ThreadId.makeUnsafe("thread-prime-usage-child");
+        yield* adapter.startSession({
+          provider: "prime",
+          threadId,
+          runtimeMode: "full-access",
+          cwd: agent.cwd,
+        });
+
+        const turn = yield* adapter.sendTurn({ threadId, input: "hello prime", attachments: [] });
+        const completed = yield* waitFor(
+          (event) => event.type === "turn.completed" && event.turnId === turn.turnId,
+        );
+        expect(completed).toMatchObject({
+          payload: { state: "completed", cumulativeCostUsd: 0.0471 + 0.02 },
+        });
+        const usage = usageEvents(events);
+        expect(usage).toHaveLength(1);
+        expect(usage[0]?.turnId).toBe(turn.turnId);
+        expect(usage[0]?.payload.usage).toMatchObject({
+          usedTokens: 7_531,
+          totalProcessedTokens: 7_531 + 9_900,
+          inputTokens: 7_153 + 9_000,
+          outputTokens: 378 + 900,
+          lastUsedTokens: 7_531,
+        });
+
+        yield* adapter.stopSession(threadId);
         yield* Fiber.interrupt(collectorFiber);
       }).pipe(
         Effect.provide(
@@ -1480,7 +1603,7 @@ describe("Prime session-file usage through the adapter", () => {
         expect(compacted).toBeDefined();
         expect(compacted?.payload).toMatchObject({
           status: "completed",
-          detail: "Compacted 7,531 tokens of context",
+          detail: "from 7,531 tokens",
         });
         // Peak reading, then the row, then the estimate, then the exact answer.
         const usage = usageEvents(events);

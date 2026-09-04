@@ -25,7 +25,20 @@ export const PRIVACY_LAST_UPDATED = new Date("2026-06-04T00:00:00.000Z");
 export const DOCS_LAST_UPDATED = new Date("2026-08-04T00:00:00.000Z");
 export const SPONSOR_LAST_UPDATED = new Date("2026-08-07T00:00:00.000Z");
 
-export function releaseDateIso(dateLabel: string) {
+/**
+ * Date label for a changelog block curated ahead of its tag. The UI renders it
+ * verbatim; the helpers below treat it as "no release date yet" so sitemaps
+ * and structured data never invent one.
+ */
+export const UNRELEASED_DATE_LABEL = "Unreleased";
+
+export function isReleasedDateLabel(dateLabel: string): boolean {
+  return dateLabel !== UNRELEASED_DATE_LABEL;
+}
+
+/** ISO timestamp for a shipped release's label; undefined while unreleased. */
+export function releaseDateIso(dateLabel: string): string | undefined {
+  if (!isReleasedDateLabel(dateLabel)) return undefined;
   const [monthName, day] = dateLabel.split(" ");
   const month = MONTHS[monthName] ?? "01";
   const paddedDay = (day ?? "1").padStart(2, "0");
@@ -33,6 +46,7 @@ export function releaseDateIso(dateLabel: string) {
   return `${DEFAULT_RELEASE_YEAR}-${month}-${paddedDay}T00:00:00.000Z`;
 }
 
-export function releaseDate(dateLabel: string) {
-  return new Date(releaseDateIso(dateLabel));
+export function releaseDate(dateLabel: string): Date | undefined {
+  const iso = releaseDateIso(dateLabel);
+  return iso === undefined ? undefined : new Date(iso);
 }

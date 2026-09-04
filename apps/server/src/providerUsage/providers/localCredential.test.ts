@@ -8,7 +8,7 @@ import nodePath from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { droidUsageFetcher, piUsageFetcher } from "./localCredential";
+import { droidUsageFetcher, piUsageFetcher, primeUsageFetcher } from "./localCredential";
 
 const NOW_MS = 1_780_000_000_000;
 const tempDirs: string[] = [];
@@ -31,6 +31,7 @@ describe("local credential usage fetchers", () => {
     const ctx = { homeDir, env: {}, platform: "linux" as const, nowMs: NOW_MS };
     expect((await droidUsageFetcher.fetch(ctx)).status).toBe("needs-auth");
     expect((await piUsageFetcher.fetch(ctx)).status).toBe("needs-auth");
+    expect((await primeUsageFetcher.fetch(ctx)).status).toBe("needs-auth");
   });
 
   it("surfaces signed-in Droid and Pi without inventing quota bars", async () => {
@@ -51,5 +52,46 @@ describe("local credential usage fetchers", () => {
     expect(pi.status).toBe("ok");
     expect(droid.limits).toEqual([]);
     expect(pi.usageLines[0]?.label).toBe("Limits");
+  });
+
+  it("counts Prime as signed in once /login stored an upstream credential", async () => {
+    const homeDir = makeHome();
+    mkdirSync(nodePath.join(homeDir, ".prime", "agent"), { recursive: true });
+    writeFileSync(
+      nodePath.join(homeDir, ".prime", "agent", "auth.json"),
+      JSON.stringify({ anthropic: { type: "api_key" }, openai: { type: "oauth" } }),
+    );
+
+    const ctx = { homeDir, env: {}, platform: "linux" as const, nowMs: NOW_MS };
+    const prime = await primeUsageFetcher.fetch(ctx);
+
+    expect(prime.status).toBe("ok");
+    expect(prime.limits).toEqual([]);
+    expect(prime.usageLines[0]?.label).toBe("Limits");
+    expect(await primeUsageFetcher.cacheKey?.(ctx)).toBe("file:prime:anthropic,openai");
+  });
+
+  it("keeps Prime needs-auth when auth.json exists but holds no provider", async () => {
+    const homeDir = makeHome();
+    mkdirSync(nodePath.join(homeDir, ".prime", "agent"), { recursive: true });
+    writeFileSync(nodePath.join(homeDir, ".prime", "agent", "auth.json"), "{}");
+
+    const ctx = { homeDir, env: {}, platform: "linux" as const, nowMs: NOW_MS };
+    expect((await primeUsageFetcher.fetch(ctx)).status).toBe("needs-auth");
+  });
+
+  it("reads Prime credentials from PRIME_AGENT_CODING_AGENT_DIR when set", async () => {
+    const homeDir = makeHome();
+    const agentDir = nodePath.join(homeDir, "custom-prime-agent");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(nodePath.join(agentDir, "auth.json"), JSON.stringify({ cerebras: {} }));
+
+    const ctx = {
+      homeDir,
+      env: { PRIME_AGENT_CODING_AGENT_DIR: agentDir },
+      platform: "linux" as const,
+      nowMs: NOW_MS,
+    };
+    expect((await primeUsageFetcher.fetch(ctx)).status).toBe("ok");
   });
 });

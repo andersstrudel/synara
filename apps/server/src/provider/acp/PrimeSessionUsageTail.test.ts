@@ -112,14 +112,14 @@ const waitFor = (predicate: () => boolean, timeoutMs = 5_000) =>
     }
   });
 
-function startTail(
+function makeTail(
   file: string,
   updates: ObservedUpdate[],
   options: { readonly isActive?: () => boolean } = {},
 ) {
   return Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
-    const tail = yield* makePrimeSessionUsageTail({
+    return yield* makePrimeSessionUsageTail({
       fileSystem,
       file,
       isActive: options.isActive ?? (() => true),
@@ -137,9 +137,34 @@ function startTail(
           });
         }),
     });
+  });
+}
+
+function startTail(
+  file: string,
+  updates: ObservedUpdate[],
+  options: { readonly isActive?: () => boolean } = {},
+) {
+  return Effect.gen(function* () {
+    const tail = yield* makeTail(file, updates, options);
     yield* tail.run.pipe(Effect.forkScoped);
     return tail;
   });
+}
+
+/** A file whose history already holds a compaction: u1, a1, c1 (keeps u1), a2. */
+function appendCompactedHistory(file: string): void {
+  appendFileSync(
+    file,
+    [
+      userLine("u1", "hello prime"),
+      assistantLine("a1", 7_000, 500),
+      compactionLine("c1", "u1", "s".repeat(100)),
+      assistantLine("a2", 3_000, 100),
+    ]
+      .map((entry) => `${entry}\n`)
+      .join(""),
+  );
 }
 
 describe("makePrimeSessionUsageTail", () => {
@@ -239,6 +264,63 @@ describe("makePrimeSessionUsageTail", () => {
     );
   });
 
+  it("treats a flush that lands before the catch-up as the catch-up, never as a live tail", async () => {
+    const file = makeSessionFile();
+    appendCompactedHistory(file);
+    const updates: ObservedUpdate[] = [];
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const tail = yield* makeTail(file, updates, { isActive: () => false });
+        // The adapter can flush at a turn's settle before run's catch-up has
+        // taken the read lock: the historical compaction must not be reported
+        // as a boundary (that would publish a fresh "Context compacted" row).
+        yield* tail.flush;
+        expect(updates).toEqual([
+          { reason: "catch-up", usedTokens: 3_100, assistantMessages: 2, entryId: "a2" },
+        ]);
+
+        // run finds nothing left to catch up on and does not report again.
+        yield* tail.run.pipe(Effect.forkScoped);
+        yield* Effect.sleep(250);
+        expect(updates).toHaveLength(1);
+
+        // From here the tail is live: a new compaction is a boundary again
+        // (summary 25 + kept "Hi there" 2), then the exact usage follows.
+        appendFileSync(
+          file,
+          `${compactionLine("c2", "a2", "s".repeat(100))}\n${assistantLine("a3", 2_000, 50)}\n`,
+        );
+        yield* tail.flush;
+        expect(updates.slice(1)).toEqual([
+          { reason: "estimate", usedTokens: 27, assistantMessages: 2, entryId: "c2" },
+          { reason: "usage", usedTokens: 2_050, assistantMessages: 3, entryId: "a3" },
+        ]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    );
+  });
+
+  it("folds the history once when a flush races run's catch-up", async () => {
+    const file = makeSessionFile();
+    appendCompactedHistory(file);
+    const updates: ObservedUpdate[] = [];
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        // Whichever side takes the read lock first performs the catch-up; the
+        // other finds nothing new. Either way there is one report and the
+        // historical compaction is never a boundary.
+        const tail = yield* startTail(file, updates, { isActive: () => false });
+        yield* tail.flush;
+        yield* waitFor(() => updates.length >= 1);
+        yield* Effect.sleep(250);
+        expect(updates).toEqual([
+          { reason: "catch-up", usedTokens: 3_100, assistantMessages: 2, entryId: "a2" },
+        ]);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    );
+  });
+
   it("starts over when the file shrinks", async () => {
     const file = makeSessionFile();
     appendFileSync(file, `${assistantLine("a1", 100, 10)}\n${assistantLine("a2", 200, 10)}\n`);
@@ -252,7 +334,13 @@ describe("makePrimeSessionUsageTail", () => {
         writeFileSync(file, `${line(header())}\n`, "utf8");
         appendFileSync(file, `${assistantLine("b1", 50, 5)}\n`);
         yield* waitFor(() => updates.length >= 2);
-        expect(updates[1]).toMatchObject({ usedTokens: 55, assistantMessages: 1, entryId: "b1" });
+        // A replaced file is caught up on like a fresh one.
+        expect(updates[1]).toEqual({
+          reason: "catch-up",
+          usedTokens: 55,
+          assistantMessages: 1,
+          entryId: "b1",
+        });
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
     );
   });

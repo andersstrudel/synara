@@ -3,7 +3,9 @@
 // Layer: static data (server-importable). Mirrors the in-app "What's new"
 //        changelog from the Synara desktop app, newest release first.
 // Note: To add a release, prepend a new entry. `date` is rendered verbatim,
-//       so keep the format consistent (e.g. "Jun 4").
+//       so keep the format consistent (e.g. "Jun 4"). A block curated ahead of
+//       its tag uses `date: "Unreleased"` (see lib/releaseDates.ts), which keeps
+//       it out of the sitemap and structured-data dates until it ships.
 
 /** A single highlight inside a release. */
 export interface ChangelogFeature {
@@ -26,8 +28,8 @@ export interface ChangelogEntry {
 
 export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
   {
-    version: "0.8.1",
-    date: "Sep 2",
+    version: "0.8.2",
+    date: "Unreleased",
     features: [
       {
         id: "prime-agent-provider",
@@ -37,6 +39,12 @@ export const CHANGELOG_ENTRIES: readonly ChangelogEntry[] = [
         details:
           "Synara starts `prime-agent --mode acp` for each thread, resumes threads through Prime's own session ids, lists every model its credentials unlock grouped by upstream provider with a per-model thinking-level picker, runs `/compact` natively, exposes Prime skills and slash commands, and passes its browser and gateway MCP tools into the session. Authentication stays owned by Prime through `/login`, whose credentials Synara reads from `~/.prime/agent/auth.json` without duplicating them. Plan mode is a prompt-prefix emulation, live-turn steering is not advertised, and the approval-required runtime mode is unavailable because Prime never requests permissions.",
       },
+    ],
+  },
+  {
+    version: "0.8.1",
+    date: "Sep 2",
+    features: [
       {
         id: "claude-fable-5-1",
         title: "Use Claude Fable 5.1 across Claude and Pi",

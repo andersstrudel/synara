@@ -4,10 +4,16 @@
  * onto Synara's `ThreadTokenUsageSnapshot`.
  *
  * Prime's ACP mode never sends `usage_update`, but its session file records
- * exact usage for every LLM call. The context math here mirrors prime-agent's
- * `core/compaction/compaction.js` (`calculateContextTokens`, `estimateTokens`,
- * `estimateContextTokens`) and `core/session-manager.js` (`buildSessionContext`)
- * so the composer dial agrees with Prime's own `/usage`.
+ * exact usage for every LLM call. While an assistant usage block is the latest
+ * context reading, the figure is the one Prime's own `/usage` shows (its
+ * `calculateContextTokens` in `core/compaction/compaction.js`). After a
+ * `compaction` entry Prime's `getContextUsage` reports no context at all until
+ * the next assistant usage arrives; this module instead estimates the reduced
+ * context (summary + retained entries + everything appended since, chars/4,
+ * after `estimateTokens` and `buildSessionContext`) so the meter shows the
+ * effect of the compaction at once. That estimate is Synara's approximation,
+ * replaced by the next exact reading. Cumulative totals and cost follow
+ * Prime's `getSessionStats`, sub-agent usage attributed to the parent included.
  *
  * Everything in this module is pure and incremental: entries are folded one
  * at a time, so a tail never re-parses the whole file after its catch-up read.
@@ -27,7 +33,7 @@ const PRIME_IMAGE_ESTIMATE_CHARS = 4_800;
 const PRIME_RECENT_ENTRY_LIMIT = 4_096;
 // A single session line larger than this (a multi-megabyte tool result) is
 // skipped instead of buffered: it can never be an assistant usage entry.
-export const PRIME_SESSION_LINE_MAX_BYTES = 16 * 1024 * 1024;
+const PRIME_SESSION_LINE_MAX_BYTES = 16 * 1024 * 1024;
 
 const NEWLINE_BYTE = 0x0a;
 
@@ -55,15 +61,15 @@ export interface PrimeSessionAssistantUsage {
 
 /**
  * Context estimate in force after a `compaction` entry until the next valid
- * assistant usage. Mirrors the no-usage branch of Prime's
- * `estimateContextTokens`: summary + retained entries + everything appended
- * since, all at chars/4.
+ * assistant usage: summary + retained entries + everything appended since,
+ * all at chars/4 (Prime's `estimateTokens` over what `buildSessionContext`
+ * would send). Prime itself reports no context in this window, so the figure
+ * is an approximation of the next call's context, not a reading Prime shows.
  */
 export interface PrimeSessionUsageEstimate {
   readonly summaryTokens: number;
+  /** Zero when `firstKeptEntryId` fell outside the remembered entry window. */
   readonly retainedTokens: number;
-  /** False when `firstKeptEntryId` fell outside the remembered entry window. */
-  readonly retainedKnown: boolean;
   trailingTokens: number;
 }
 
@@ -74,11 +80,11 @@ export interface PrimeSessionRecentEntry {
 
 /**
  * Mutable running state. Cumulative counters cover every assistant message
- * with a usage block (the way Prime's `getSessionStats` sums them); context
- * fields follow Prime's compaction rules (aborted/error responses skipped).
+ * with a usage block plus the sub-agent usage attributed to them (the way
+ * Prime's `getSessionStats` sums them); context fields follow Prime's
+ * compaction rules (aborted/error responses skipped).
  */
 export interface PrimeSessionUsageState {
-  entries: number;
   assistantMessages: number;
   inputTokens: number;
   cachedInputTokens: number;
@@ -136,7 +142,6 @@ function jsonLength(value: unknown): number {
 
 export function createPrimeSessionUsageState(): PrimeSessionUsageState {
   return {
-    entries: 0,
     assistantMessages: 0,
     inputTokens: 0,
     cachedInputTokens: 0,
@@ -285,6 +290,17 @@ function parsePrimeSessionModel(
   return providerId && id ? { provider: providerId, modelId: id } : undefined;
 }
 
+function addUsageTotals(state: PrimeSessionUsageState, usage: PrimeSessionUsageTokens): void {
+  state.inputTokens += usage.input;
+  state.cachedInputTokens += usage.cacheRead;
+  state.cacheWriteTokens += usage.cacheWrite;
+  state.outputTokens += usage.output;
+  state.totalProcessedTokens += usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
+  if (usage.costUsd !== undefined) {
+    state.costUsd = (state.costUsd ?? 0) + usage.costUsd;
+  }
+}
+
 function foldAssistantMessage(
   state: PrimeSessionUsageState,
   message: Record<string, unknown>,
@@ -305,14 +321,7 @@ function foldAssistantMessage(
     return "none";
   }
   state.assistantMessages += 1;
-  state.inputTokens += usage.input;
-  state.cachedInputTokens += usage.cacheRead;
-  state.cacheWriteTokens += usage.cacheWrite;
-  state.outputTokens += usage.output;
-  state.totalProcessedTokens += usage.input + usage.output + usage.cacheRead + usage.cacheWrite;
-  if (usage.costUsd !== undefined) {
-    state.costUsd = (state.costUsd ?? 0) + usage.costUsd;
-  }
+  addUsageTotals(state, usage);
   const stopReason = typeof message.stopReason === "string" ? message.stopReason : undefined;
   const record: PrimeSessionAssistantUsage = { usage, model, stopReason };
   state.lastAssistantUsage = record;
@@ -325,12 +334,28 @@ function foldAssistantMessage(
   return "usage";
 }
 
+/**
+ * Prime's `attributeChildUsage`: a sub-agent's usage is billed to the parent
+ * assistant message (the entry rewrites that message's usage block on load)
+ * while the parent's `totalTokens`, and so the context, stays as it was.
+ */
+function foldChildUsageAttribution(
+  state: PrimeSessionUsageState,
+  entry: Record<string, unknown>,
+): PrimeSessionUsageChange {
+  const usage = parsePrimeSessionUsageTokens(entry.childUsage);
+  if (usage === undefined) {
+    return "none";
+  }
+  addUsageTotals(state, usage);
+  return "usage";
+}
+
 function startEstimate(state: PrimeSessionUsageState, entry: Record<string, unknown>): void {
   const summary = typeof entry.summary === "string" ? entry.summary : "";
   const firstKeptEntryId =
     typeof entry.firstKeptEntryId === "string" ? entry.firstKeptEntryId : undefined;
   let retainedTokens = 0;
-  let retainedKnown = firstKeptEntryId === undefined;
   if (firstKeptEntryId !== undefined) {
     // Prime's buildSessionContext keeps every message-producing entry from
     // firstKeptEntryId up to the compaction, in order, after the summary.
@@ -340,7 +365,6 @@ function startEstimate(state: PrimeSessionUsageState, entry: Record<string, unkn
       index -= 1;
     }
     if (index >= 0) {
-      retainedKnown = true;
       for (let cursor = index; cursor < entries.length; cursor += 1) {
         retainedTokens += entries[cursor]?.tokens ?? 0;
       }
@@ -349,7 +373,6 @@ function startEstimate(state: PrimeSessionUsageState, entry: Record<string, unkn
   state.estimate = {
     summaryTokens: charsToTokens(summary.length),
     retainedTokens,
-    retainedKnown,
     trailingTokens: 0,
   };
 }
@@ -365,9 +388,9 @@ function rememberEntry(state: PrimeSessionUsageState, id: unknown, tokens: numbe
 }
 
 /**
- * Folds one parsed session entry. `session` headers, `child_usage_attributed`
- * (sub-agent usage is attributed to the parent's cost, never its context) and
- * daemon bookkeeping entries are ignored.
+ * Folds one parsed session entry. `session` headers and daemon bookkeeping
+ * entries are ignored; `child_usage_attributed` moves the totals and cost the
+ * way an assistant usage block does, never the context.
  */
 export function applyPrimeSessionEntry(
   state: PrimeSessionUsageState,
@@ -376,7 +399,6 @@ export function applyPrimeSessionEntry(
   if (!isRecord(entry) || typeof entry.type !== "string") {
     return "none";
   }
-  state.entries += 1;
   const tokens = estimatePrimeEntryTokens(entry);
   let change: PrimeSessionUsageChange = "none";
   let contextUsageReplaced = false;
@@ -402,6 +424,10 @@ export function applyPrimeSessionEntry(
     case "compaction": {
       startEstimate(state, entry);
       change = "estimate";
+      break;
+    }
+    case "child_usage_attributed": {
+      change = foldChildUsageAttribution(state, entry);
       break;
     }
     default:
@@ -434,15 +460,7 @@ export function parsePrimeSessionLine(line: string): unknown {
   }
 }
 
-export function applyPrimeSessionLine(
-  state: PrimeSessionUsageState,
-  line: string,
-): PrimeSessionUsageChange {
-  const entry = parsePrimeSessionLine(line);
-  return entry === undefined ? "none" : applyPrimeSessionEntry(state, entry);
-}
-
-export function primeSessionEstimateTokens(estimate: PrimeSessionUsageEstimate): number {
+function primeSessionEstimateTokens(estimate: PrimeSessionUsageEstimate): number {
   return estimate.summaryTokens + estimate.retainedTokens + estimate.trailingTokens;
 }
 
@@ -566,6 +584,7 @@ export class PrimeSessionLineSplitter {
 
   constructor(private readonly maxLineBytes: number = PRIME_SESSION_LINE_MAX_BYTES) {}
 
+  /** @internal Exposed for tests: bytes of the buffered partial line. */
   get pendingBytes(): number {
     return this.pending.length;
   }

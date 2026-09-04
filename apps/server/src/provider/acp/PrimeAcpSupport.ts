@@ -805,6 +805,17 @@ export async function readPrimeSessionHeader(
   }
 }
 
+/**
+ * The form of a session cwd that `samePrimeSessionCwd` compares: the real
+ * path when it resolves, the absolute path otherwise. Used to key per-cwd
+ * work in the sessions dir, since Prime keeps every project's sessions in one
+ * directory and only same-cwd starts can bind each other's files.
+ */
+export async function canonicalPrimeSessionCwd(cwd: string): Promise<string> {
+  const resolved = nodePath.resolve(cwd);
+  return realpath(resolved).catch(() => resolved);
+}
+
 async function samePrimeSessionCwd(left: string, right: string): Promise<boolean> {
   if (nodePath.resolve(left) === nodePath.resolve(right)) {
     return true;

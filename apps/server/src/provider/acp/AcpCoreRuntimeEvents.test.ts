@@ -7,6 +7,7 @@ import {
   makeAcpPlanUpdatedEvent,
   makeAcpRequestOpenedEvent,
   makeAcpRequestResolvedEvent,
+  makeAcpTokenUsageEvent,
   makeAcpToolCallEvent,
   stampAcpRuntimeEventLifecycleGeneration,
 } from "./AcpCoreRuntimeEvents.ts";
@@ -238,6 +239,40 @@ describe("AcpCoreRuntimeEvents", () => {
         itemType: "assistant_message",
         status: "inProgress",
       },
+    });
+  });
+  it("labels token usage as an ACP update unless the adapter names another source", () => {
+    const stamp = { eventId: "event-1" as never, createdAt: "2026-03-27T00:00:00.000Z" };
+    const usage = { usedTokens: 120, totalProcessedTokens: 120, compactsAutomatically: true };
+
+    expect(
+      makeAcpTokenUsageEvent({
+        stamp,
+        provider: "cursor",
+        threadId: "thread-1" as never,
+        turnId: TurnId.makeUnsafe("turn-1"),
+        usage,
+        rawPayload: { sessionId: "session-1" },
+      }),
+    ).toMatchObject({
+      type: "thread.token-usage.updated",
+      payload: { usage },
+      raw: { source: "acp.jsonrpc", method: "session/update" },
+    });
+
+    expect(
+      makeAcpTokenUsageEvent({
+        stamp,
+        provider: "prime",
+        threadId: "thread-1" as never,
+        turnId: undefined,
+        usage,
+        source: "prime.session-file.entry",
+        method: "session/file",
+        rawPayload: { type: "message", id: "a1" },
+      }),
+    ).toMatchObject({
+      raw: { source: "prime.session-file.entry", method: "session/file" },
     });
   });
 });

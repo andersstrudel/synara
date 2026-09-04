@@ -262,6 +262,8 @@ export function makeAcpTokenUsageEvent(input: {
   readonly threadId: ThreadId;
   readonly turnId: TurnId | undefined;
   readonly usage: ThreadTokenUsageSnapshot;
+  /** Where the usage came from; an ACP `usage_update` unless the adapter read it elsewhere. */
+  readonly source?: RuntimeEventRawSource;
   readonly method?: string;
   readonly rawPayload: unknown;
 }): ProviderRuntimeEvent {
@@ -275,7 +277,7 @@ export function makeAcpTokenUsageEvent(input: {
       usage: input.usage,
     },
     raw: {
-      source: "acp.jsonrpc",
+      source: input.source ?? "acp.jsonrpc",
       method: input.method ?? "session/update",
       payload: input.rawPayload,
     },

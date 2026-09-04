@@ -17,7 +17,10 @@ import { absoluteUrl, SITE_IMAGES } from "@/lib/seo";
 export const SITEMAP_PATHS = ["/sitemap.xml", "/changelog/sitemap.xml"] as const;
 
 const releases = getSortedReleases();
-const latestReleaseUpdate = releases[0] ? releaseDate(releases[0].date) : SITE_LATEST_UPDATE;
+// The newest *shipped* release drives lastModified; an "Unreleased" block has no date yet.
+const latestReleaseUpdate =
+  releases.map((entry) => releaseDate(entry.date)).find((date) => date !== undefined) ??
+  SITE_LATEST_UPDATE;
 const documentationCatalog = getDocumentationCatalog();
 
 function normalizedDate(value: Date | string | null, fallback: Date) {
@@ -113,11 +116,18 @@ export function getStaticSitemapEntries(): MetadataRoute.Sitemap {
 }
 
 export function getChangelogSitemapEntries(): MetadataRoute.Sitemap {
-  return releases.map((entry) => ({
-    url: absoluteUrl(`/changelog/${toVersionSlug(entry.version)}`),
-    lastModified: releaseDate(entry.date),
-    changeFrequency: "monthly",
-    priority: entry.version.startsWith("0.1.") ? 0.7 : 0.55,
-    images: entry.heroImage ? [absoluteUrl(entry.heroImage)] : [absoluteUrl(SITE_IMAGES.og)],
-  }));
+  return releases.flatMap((entry) => {
+    const lastModified = releaseDate(entry.date);
+    // A block curated ahead of its tag stays off the sitemap until it ships.
+    if (lastModified === undefined) return [];
+    return [
+      {
+        url: absoluteUrl(`/changelog/${toVersionSlug(entry.version)}`),
+        lastModified,
+        changeFrequency: "monthly" as const,
+        priority: entry.version.startsWith("0.1.") ? 0.7 : 0.55,
+        images: entry.heroImage ? [absoluteUrl(entry.heroImage)] : [absoluteUrl(SITE_IMAGES.og)],
+      },
+    ];
+  });
 }

@@ -15,6 +15,7 @@ import ChangelogPicker from "@/components/ChangelogPicker";
 import { type ChangelogEntry } from "@/data/changelog";
 import { GITHUB_RELEASES_URL } from "@/lib/seo";
 import { getSortedReleases, toAnchor, toVersionSlug } from "@/lib/changelog";
+import { isReleasedDateLabel } from "@/lib/releaseDates";
 
 // Render `backtick` spans as inline code chips; everything else is plain text.
 // The changelog data only uses backticks (no links/bold), so this stays tiny.
@@ -44,7 +45,14 @@ export default function ChangelogContent({
   description?: string;
 } = {}) {
   const highlightedRelease = releases[0];
-  const releaseLabel = releases.length === 1 ? "Release" : "Latest release";
+  // A block curated ahead of its tag (date "Unreleased") is announced as the
+  // next release rather than the latest one.
+  const releaseLabel =
+    releases.length === 1
+      ? "Release"
+      : highlightedRelease && !isReleasedDateLabel(highlightedRelease.date)
+        ? "Next release"
+        : "Latest release";
   const navItems = releases.map((entry) => ({
     version: entry.version,
     date: entry.date,

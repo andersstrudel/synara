@@ -11,6 +11,10 @@
 //   - `version` must match `apps/web/package.json#version` exactly. The
 //     logic compares versions as semver and only opens the dialog when the
 //     installed build has a curated entry here.
+//   - The next version may be curated ahead of its tag with
+//     `date: "Unreleased"`. The popout anchors on the installed version, so
+//     it stays quiet until `package.json` catches up, while Release history
+//     and the help menu already list it. Swap in the real date at release.
 //   - `date` is rendered verbatim — pick whatever format you want (e.g.
 //     `"Apr 18"`, `"2026-04-18"`), just be consistent release-to-release.
 //   - Each feature takes an `id` (stable, unique per release), a short
@@ -22,8 +26,8 @@ import type { WhatsNewEntry } from "./logic";
 
 export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
   {
-    version: "0.8.1",
-    date: "Sep 2",
+    version: "0.8.2",
+    date: "Unreleased",
     features: [
       {
         id: "prime-agent-provider",
@@ -33,6 +37,12 @@ export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
         details:
           "Synara starts `prime-agent --mode acp` for each thread, resumes threads through Prime's own session ids, lists every model its credentials unlock grouped by upstream provider with a per-model thinking-level picker, runs `/compact` natively, exposes Prime skills and slash commands, and passes its browser and gateway MCP tools into the session. Authentication stays owned by Prime through `/login`, whose credentials Synara reads from `~/.prime/agent/auth.json` without duplicating them. Plan mode is a prompt-prefix emulation, live-turn steering is not advertised, and the approval-required runtime mode is unavailable because Prime never requests permissions.",
       },
+    ],
+  },
+  {
+    version: "0.8.1",
+    date: "Sep 2",
+    features: [
       {
         id: "claude-fable-5-1",
         title: "Use Claude Fable 5.1 across Claude and Pi",

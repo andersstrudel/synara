@@ -20,7 +20,8 @@ describe("ProviderIcon", () => {
   it("renders the Prime mark in currentColor so it follows the provider tone", () => {
     const markup = renderToStaticMarkup(<ProviderIcon provider="prime" className="size-4" />);
 
-    expect(markup).toContain('viewBox="0 0 178 178"');
+    expect(markup).toContain('viewBox="17.8 17.8 142.4 142.4"');
+    expect(markup).toContain('overflow="visible"');
     expect(markup).toContain('fill="currentColor"');
     expect(markup).not.toContain("#ffffff");
   });

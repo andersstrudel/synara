@@ -17,7 +17,7 @@ consistent workspace.
 | [Grok Build](https://www.trysynara.com/docs/providers/grok)             | Your configured Grok Build runtime and access                |
 | [Pi](https://www.trysynara.com/docs/providers/pi)                       | Pi and the model providers configured through it             |
 | [Factory Droid](https://www.trysynara.com/docs/providers/factory-droid) | Your installed and authenticated Droid runtime               |
-| [Prime](https://github.com/PrimeIntellect-ai/prime-agent)               | Your `prime-agent` CLI and the credentials saved by `/login` |
+| [Prime](https://www.trysynara.com/docs/providers/prime)                 | Your `prime-agent` CLI and the credentials saved by `/login` |
 
 Provider availability can differ between the current stable release and development builds. Use the
 provider settings in your installed Synara version as the authoritative list for that build.

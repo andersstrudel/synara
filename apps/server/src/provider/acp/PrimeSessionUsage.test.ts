@@ -2,11 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyPrimeSessionEntry,
-  applyPrimeSessionLine,
   calculatePrimeContextTokens,
   createPrimeSessionUsageState,
   describePrimeSessionEntry,
   estimatePrimeMessageTokens,
+  parsePrimeSessionLine,
   PrimeSessionLineSplitter,
   type PrimeSessionUsageState,
   resolvePrimeSessionUsageModel,
@@ -316,22 +316,91 @@ describe("applyPrimeSessionEntry", () => {
     expect(state.costUsd).toBeCloseTo(0.03, 10);
   });
 
-  it("ignores headers, sub-agent attributions, daemon bookkeeping and malformed lines", () => {
+  it("bills attributed sub-agent usage to the totals and cost, never the context", () => {
     const state = createPrimeSessionUsageState();
-    fold(state, [
+    const changes = fold(state, [
       SESSION_HEADER,
       userEntry("u1", null, "hello"),
-      assistantEntry({ id: "a1", parentId: "u1", usage: usageBlock({ input: 500, output: 50 }) }),
+      assistantEntry({
+        id: "a1",
+        parentId: "u1",
+        usage: usageBlock({ input: 500, output: 50, costTotal: 0.01 }),
+      }),
+      // Prime's attributeChildUsage adds the child's usage to a1's block on
+      // load but keeps a1's totalTokens, so /usage totals move and context
+      // does not.
       {
         type: "child_usage_attributed",
         id: "x1",
         parentId: "a1",
         timestamp: "t",
         targetId: "a1",
-        childUsage: usageBlock({ input: 9_000, output: 900 }),
-        aggregateUsage: usageBlock({ input: 9_500, output: 950 }),
+        childUsage: usageBlock({ input: 9_000, output: 900, cacheRead: 40, costTotal: 0.2 }),
+        aggregateUsage: usageBlock({
+          input: 9_500,
+          output: 950,
+          cacheRead: 40,
+          totalTokens: 550,
+          costTotal: 0.21,
+        }),
+        origin: { kind: "rlm", depth: 1 },
       },
-      { type: "agent_status", id: "s1", parentId: "x1", timestamp: "t", status: "idle" },
+    ]);
+    expect(changes).toEqual(["none", "none", "usage", "usage"]);
+    expect(snapshotPrimeSessionUsage(state, undefined)).toMatchObject({
+      usedTokens: 550,
+      totalProcessedTokens: 550 + 9_940,
+      inputTokens: 9_500,
+      cachedInputTokens: 40,
+      outputTokens: 950,
+      lastUsedTokens: 550,
+      lastInputTokens: 500,
+    });
+    expect(state.assistantMessages).toBe(1);
+    expect(state.costUsd).toBeCloseTo(0.21, 10);
+    // A malformed attribution is skipped like a malformed usage block.
+    expect(
+      fold(state, [
+        {
+          type: "child_usage_attributed",
+          id: "x2",
+          parentId: "x1",
+          timestamp: "t",
+          targetId: "a1",
+        },
+        {
+          type: "child_usage_attributed",
+          id: "x3",
+          parentId: "x2",
+          timestamp: "t",
+          targetId: "a1",
+          childUsage: "9000",
+        },
+      ]),
+    ).toEqual(["none", "none"]);
+    expect(
+      applyPrimeSessionEntry(state, {
+        type: "child_usage_attributed",
+        id: "x4",
+        parentId: "x3",
+        timestamp: "t",
+        targetId: "a1",
+        childUsage: { input: Number.NaN, output: -5, cacheRead: "7", cost: { total: "free" } },
+      }),
+    ).toBe("usage");
+    expect(snapshotPrimeSessionUsage(state, undefined)).toMatchObject({
+      totalProcessedTokens: 550 + 9_940,
+    });
+    expect(state.costUsd).toBeCloseTo(0.21, 10);
+  });
+
+  it("ignores headers, daemon bookkeeping and malformed lines", () => {
+    const state = createPrimeSessionUsageState();
+    fold(state, [
+      SESSION_HEADER,
+      userEntry("u1", null, "hello"),
+      assistantEntry({ id: "a1", parentId: "u1", usage: usageBlock({ input: 500, output: 50 }) }),
+      { type: "agent_status", id: "s1", parentId: "a1", timestamp: "t", status: "idle" },
       { type: "session_state", id: "s2", parentId: "s1", timestamp: "t", state: {} },
       {
         type: "thinking_level_change",
@@ -344,15 +413,23 @@ describe("applyPrimeSessionEntry", () => {
       null,
       { noType: true },
     ]);
-    expect(applyPrimeSessionLine(state, "")).toBe("none");
-    expect(applyPrimeSessionLine(state, "{ this is not json")).toBe("none");
-    expect(applyPrimeSessionLine(state, "[1,2,3]")).toBe("none");
+    for (const line of ["", "   ", "{ this is not json", "[1,2,3]", '"a string"']) {
+      expect(parsePrimeSessionLine(line)).toBeUndefined();
+    }
     expect(snapshotPrimeSessionUsage(state, undefined)).toMatchObject({
       usedTokens: 550,
       totalProcessedTokens: 550,
       inputTokens: 500,
     });
-    expect(state.entries).toBe(7);
+    expect(state.assistantMessages).toBe(1);
+    expect(state.recentEntries.map((entry) => entry.id)).toEqual([
+      "01a0-session",
+      "u1",
+      "a1",
+      "s1",
+      "s2",
+      "t1",
+    ]);
   });
 
   it("estimates the reduced context after a compaction until the next exact usage", () => {
@@ -385,7 +462,6 @@ describe("applyPrimeSessionEntry", () => {
     expect(state.estimate).toEqual({
       summaryTokens: 100,
       retainedTokens: 5,
-      retainedKnown: true,
       trailingTokens: 0,
     });
     expect(snapshotPrimeSessionUsage(state, 131_072)).toMatchObject({
@@ -477,7 +553,6 @@ describe("applyPrimeSessionEntry", () => {
     expect(state.estimate).toEqual({
       summaryTokens: 20,
       retainedTokens: 0,
-      retainedKnown: false,
       trailingTokens: 0,
     });
     applyPrimeSessionEntry(state, userEntry("u2", "c1", "next".repeat(2)));

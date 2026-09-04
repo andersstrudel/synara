@@ -42,6 +42,14 @@ switch the installation to the normal channel once:
 bun run canary:update -- --ref main
 ```
 
+## Opening the app
+
+`canary:setup`, `canary:update` and `canary:start` also install `~/Applications/Synara Canary.app`, a
+thin launcher with the Synara icon that opens the built runtime bundle. Launch it from Spotlight,
+Launchpad, Finder or the Dock like any other app; clicking it while Canary is already running just
+focuses the existing window. The runtime bundle itself carries an entry Electron runs when it is
+opened without arguments, so opening it directly works too instead of showing Electron's splash.
+
 ## Operations
 
 ```bash

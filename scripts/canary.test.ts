@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   canaryCloneArgs,
+  canaryLauncherAppPath,
+  canaryLauncherBundleFiles,
+  canaryRuntimeExecutablePath,
   canaryStartArgs,
   parseCanaryArgs,
   resolveCanaryPaths,
@@ -64,6 +67,26 @@ describe("canary tooling", () => {
       "codex/synara-canary",
     );
     expect(resolveCanaryRef(parseCanaryArgs(["update", "--ref", "main"]), "old-ref")).toBe("main");
+  });
+
+  it("installs a double-clickable app that execs the runtime bundle", () => {
+    expect(canaryLauncherAppPath("/Users/tester")).toBe(
+      "/Users/tester/Applications/Synara Canary.app",
+    );
+    const runtime = canaryRuntimeExecutablePath("/Users/tester/.cache/synara-canary/source");
+    expect(runtime).toBe(
+      "/Users/tester/.cache/synara-canary/source/apps/desktop/.electron-runtime/Synara Canary.app/Contents/MacOS/Electron",
+    );
+    const files = canaryLauncherBundleFiles({ runtimeExecutablePath: runtime });
+    expect(files.infoPlist).toContain(
+      "<string>com.emanueledipietro.synara.canary.launcher</string>",
+    );
+    expect(files.infoPlist).toContain(
+      "<key>CFBundleExecutable</key>\n  <string>Synara Canary</string>",
+    );
+    expect(files.launcherScript.startsWith("#!/bin/sh\n")).toBe(true);
+    expect(files.launcherScript).toContain(`RUNTIME='${runtime}'`);
+    expect(files.launcherScript).toContain('exec "$RUNTIME" "$@"');
   });
 
   it("rejects unsupported commands and incomplete refs", () => {

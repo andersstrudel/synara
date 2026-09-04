@@ -101,66 +101,68 @@ export const makePrimeSessionUsageTail = (
     // estimate, so the meter sees "compacted" between the two readings even
     // when Prime wrote both within one read.
     const readAppended = (
-      onBoundary: ((change: PrimeSessionUsageChange, entry: unknown) => Effect.Effect<void>) | undefined,
+      onBoundary:
+        | ((change: PrimeSessionUsageChange, entry: unknown) => Effect.Effect<void>)
+        | undefined,
     ): Effect.Effect<PrimeSessionReadResult> =>
       Effect.gen(function* () {
-      const info = yield* options.fileSystem.stat(options.file);
-      const size = Number(info.size);
-      if (!Number.isFinite(size)) {
-        return NO_CHANGE;
-      }
-      if (size < offset) {
-        // Prime only appends; a shrunken file means it was replaced. Start over.
-        state = createPrimeSessionUsageState();
-        splitter.reset();
-        offset = 0;
-      }
-      if (size === offset) {
-        return NO_CHANGE;
-      }
-      const file = yield* options.fileSystem.open(options.file);
-      yield* file.seek(offset, "start");
-      let change: PrimeSessionUsageChange = "none";
-      let entry: unknown;
-      while (offset < size) {
-        const chunk = yield* file.readAlloc(
-          Math.min(size - offset, PRIME_SESSION_READ_CHUNK_BYTES),
-        );
-        if (chunk === undefined || chunk.length === 0) {
-          break;
+        const info = yield* options.fileSystem.stat(options.file);
+        const size = Number(info.size);
+        if (!Number.isFinite(size)) {
+          return NO_CHANGE;
         }
-        offset += chunk.length;
-        for (const line of splitter.push(chunk)) {
-          const parsed = parsePrimeSessionLine(line);
-          if (parsed === undefined) {
-            continue;
-          }
-          const isBoundary =
-            onBoundary !== undefined && readPrimeCompactionEntry(parsed) !== undefined;
-          if (isBoundary && change !== "none") {
-            yield* onBoundary(change, entry);
-            change = "none";
-            entry = undefined;
-          }
-          const lineChange = applyPrimeSessionEntry(state, parsed);
-          if (lineChange === "none") {
-            continue;
-          }
-          if (isBoundary) {
-            yield* onBoundary(lineChange, parsed);
-            continue;
-          }
-          change = strongerChange(change, lineChange);
-          entry = parsed;
+        if (size < offset) {
+          // Prime only appends; a shrunken file means it was replaced. Start over.
+          state = createPrimeSessionUsageState();
+          splitter.reset();
+          offset = 0;
         }
-      }
-      return { change, entry };
-    }).pipe(
-      Effect.scoped,
-      // A momentary stat/open failure (file being rotated, permissions) is
-      // retried by the next wake-up; there is nothing to surface per tick.
-      Effect.orElseSucceed(() => NO_CHANGE),
-    );
+        if (size === offset) {
+          return NO_CHANGE;
+        }
+        const file = yield* options.fileSystem.open(options.file);
+        yield* file.seek(offset, "start");
+        let change: PrimeSessionUsageChange = "none";
+        let entry: unknown;
+        while (offset < size) {
+          const chunk = yield* file.readAlloc(
+            Math.min(size - offset, PRIME_SESSION_READ_CHUNK_BYTES),
+          );
+          if (chunk === undefined || chunk.length === 0) {
+            break;
+          }
+          offset += chunk.length;
+          for (const line of splitter.push(chunk)) {
+            const parsed = parsePrimeSessionLine(line);
+            if (parsed === undefined) {
+              continue;
+            }
+            const isBoundary =
+              onBoundary !== undefined && readPrimeCompactionEntry(parsed) !== undefined;
+            if (isBoundary && change !== "none") {
+              yield* onBoundary(change, entry);
+              change = "none";
+              entry = undefined;
+            }
+            const lineChange = applyPrimeSessionEntry(state, parsed);
+            if (lineChange === "none") {
+              continue;
+            }
+            if (isBoundary) {
+              yield* onBoundary(lineChange, parsed);
+              continue;
+            }
+            change = strongerChange(change, lineChange);
+            entry = parsed;
+          }
+        }
+        return { change, entry };
+      }).pipe(
+        Effect.scoped,
+        // A momentary stat/open failure (file being rotated, permissions) is
+        // retried by the next wake-up; there is nothing to surface per tick.
+        Effect.orElseSucceed(() => NO_CHANGE),
+      );
 
     const throttle = Effect.suspend(() => {
       const waitMs = minReportIntervalMs - (Date.now() - lastReportAt);

@@ -1094,7 +1094,9 @@ export function makePrimeAdapter(
             status: "completed",
             title: PRIME_COMPACTION_COMPLETED_TITLE,
             ...(autoCompaction.tokensBefore !== undefined
-              ? { detail: `Compacted ${autoCompaction.tokensBefore.toLocaleString("en-US")} tokens of context` }
+              ? {
+                  detail: `Compacted ${autoCompaction.tokensBefore.toLocaleString("en-US")} tokens of context`,
+                }
               : {}),
           });
         }

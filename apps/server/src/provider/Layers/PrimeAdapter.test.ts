@@ -1625,6 +1625,62 @@ describe("Prime session-file usage through the adapter", () => {
     );
   });
 
+  it("gives every automatic compaction its own timeline item", async () => {
+    const agent = makePrimeMockAgent({
+      sessionScript: [
+        [
+          userEntry("u1", null, "hello prime"),
+          assistantEntry("a1", "u1", usageBlock(7_153, 378, 0.0471)),
+          compactionEntry("c1", "a1", "u1"),
+          assistantEntry("a2", "c1", usageBlock(7_000, 300, 0.02)),
+          compactionEntry("c2", "a2", "u1"),
+          assistantEntry("a3", "c2", usageBlock(3_000, 100, 0.01)),
+        ],
+      ],
+    });
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* PrimeAdapter;
+        const { events, collector, waitFor } = collectRuntimeEvents(adapter.streamEvents);
+        const collectorFiber = yield* collector;
+        const threadId = ThreadId.makeUnsafe("thread-prime-usage-two-compactions");
+        yield* adapter.startSession({
+          provider: "prime",
+          threadId,
+          runtimeMode: "full-access",
+          cwd: agent.cwd,
+        });
+
+        const turn = yield* adapter.sendTurn({ threadId, input: "hello prime", attachments: [] });
+        yield* waitFor((event) => event.type === "turn.completed" && event.turnId === turn.turnId);
+
+        const compactions = events.filter(
+          (event) =>
+            event.type === "item.completed" &&
+            (event.payload as { readonly itemType?: string }).itemType === "context_compaction",
+        );
+        // Two rows, not one row updated twice: a shared id would make the
+        // timeline keep the first row's text for the second compaction.
+        expect(compactions).toHaveLength(2);
+        const itemIds = compactions.map((event) =>
+          event.type === "item.completed" ? event.itemId : undefined,
+        );
+        expect(new Set(itemIds).size).toBe(2);
+        expect(itemIds.every((itemId) => itemId?.startsWith("prime-compaction-"))).toBe(true);
+
+        yield* adapter.stopSession(threadId);
+        yield* Fiber.interrupt(collectorFiber);
+      }).pipe(
+        Effect.provide(
+          makePrimeAdapterTestLayer(
+            { binaryPath: agent.binaryPath, agentDir: agent.agentDir },
+            { runRpcDiscovery: discoveryStub() },
+          ),
+        ),
+      ),
+    );
+  });
+
   it("publishes the post-compaction estimate after the compaction outcome, then exact usage", async () => {
     const agent = makePrimeMockAgent({
       sessionScript: [

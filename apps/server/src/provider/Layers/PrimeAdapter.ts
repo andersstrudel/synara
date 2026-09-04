@@ -969,9 +969,16 @@ export function makePrimeAdapter(
         return ctx.activeTurnId;
       });
 
+    // One item per compaction, like Pi: Prime compacts repeatedly within a
+    // thread, and a shared id would make the timeline treat every later
+    // compaction as an update of the first row.
+    const makePrimeCompactionItemId = () =>
+      RuntimeItemId.makeUnsafe(`prime-compaction-${crypto.randomUUID()}`);
+
     const emitPrimeContextCompactionRuntimeEvent = (
       ctx: PrimeSessionContext,
       input: {
+        readonly itemId: RuntimeItemId;
         readonly lifecycle: "item.updated" | "item.completed";
         readonly status: "inProgress" | "completed" | "failed";
         readonly title: string;
@@ -984,7 +991,7 @@ export function makePrimeAdapter(
           ...(yield* makeEventStamp()),
           provider: PROVIDER,
           threadId: ctx.threadId,
-          itemId: RuntimeItemId.makeUnsafe(`prime-compaction:${ctx.threadId}`),
+          itemId: input.itemId,
           payload: {
             itemType: "context_compaction",
             status: input.status,
@@ -1146,6 +1153,7 @@ export function makePrimeAdapter(
             : undefined;
         if (autoCompaction !== undefined) {
           yield* emitPrimeContextCompactionRuntimeEvent(ctx, {
+            itemId: makePrimeCompactionItemId(),
             lifecycle: "item.completed",
             status: "completed",
             title: PRIME_COMPACTION_COMPLETED_TITLE,
@@ -2502,9 +2510,15 @@ export function makePrimeAdapter(
 
     // Every compaction failure path records the same terminal failed event
     // and surfaces the same request error; only the title/detail differ.
-    const failPrimeCompaction = (ctx: PrimeSessionContext, title: string, detail: string) =>
+    const failPrimeCompaction = (
+      ctx: PrimeSessionContext,
+      itemId: RuntimeItemId,
+      title: string,
+      detail: string,
+    ) =>
       Effect.gen(function* () {
         yield* emitPrimeContextCompactionRuntimeEvent(ctx, {
+          itemId,
           lifecycle: "item.completed",
           status: "failed",
           title,
@@ -2524,7 +2538,9 @@ export function makePrimeAdapter(
         // A previous timed-out /compact may still be cancelling; preserve the
         // same ordering requirement as new turns.
         yield* waitForAbandonedPrimeCompaction(ctx);
+        const itemId = makePrimeCompactionItemId();
         yield* emitPrimeContextCompactionRuntimeEvent(ctx, {
+          itemId,
           lifecycle: "item.updated",
           status: "inProgress",
           title: "Compacting context",
@@ -2545,6 +2561,7 @@ export function makePrimeAdapter(
           }
           return yield* failPrimeCompaction(
             ctx,
+            itemId,
             "Context compaction failed",
             describeCause(compactResult.cause),
           );
@@ -2565,7 +2582,7 @@ export function makePrimeAdapter(
             threadId: ctx.threadId,
             timeoutMs: timeouts.turnIdleMs,
           });
-          return yield* failPrimeCompaction(ctx, "Context compaction timed out", detail);
+          return yield* failPrimeCompaction(ctx, itemId, "Context compaction timed out", detail);
         }
 
         // The failed-tool detail below is recorded by the notification
@@ -2578,12 +2595,12 @@ export function makePrimeAdapter(
         // completed compaction and must not be persisted as one.
         if (promptResponse.stopReason === "cancelled") {
           const detail = "Prime Agent context compaction was cancelled before it completed.";
-          return yield* failPrimeCompaction(ctx, "Context compaction cancelled", detail);
+          return yield* failPrimeCompaction(ctx, itemId, "Context compaction cancelled", detail);
         }
 
         const failedToolDetail = ctx.compactionFailedToolDetail;
         if (failedToolDetail !== undefined) {
-          return yield* failPrimeCompaction(ctx, "Context compaction failed", failedToolDetail);
+          return yield* failPrimeCompaction(ctx, itemId, "Context compaction failed", failedToolDetail);
         }
 
         // Success: thread.state.changed is the single terminal signal —

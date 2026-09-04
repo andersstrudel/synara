@@ -4,7 +4,9 @@
  *
  * Prime Agent speaks the Agent Client Protocol natively and owns its own
  * credential store (`<agentDir>/auth.json`), so no auth method is negotiated
- * over ACP and no credentials are ever placed in the child environment.
+ * over ACP. Like Pi, its model registry also resolves upstream API keys from
+ * the environment (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...), so the child
+ * inherits the host's provider credentials.
  *
  * @module PrimeAcpSupport
  */
@@ -20,7 +22,7 @@ import {
   type ProviderModelDescriptor,
   type RuntimeMode,
 } from "@synara/contracts";
-import { Effect, Layer, Scope, ServiceMap, Stream } from "effect";
+import { Effect, Layer, PlatformError, Scope, ServiceMap, Stream } from "effect";
 import * as AcpErrors from "./AcpErrors.ts";
 import type * as Acp from "@agentclientprotocol/sdk";
 import { ChildProcessSpawner } from "effect/unstable/process";
@@ -28,6 +30,7 @@ import { makeEffectProcessCommand } from "../../platform/effectProcessRuntime.ts
 
 import { buildProviderChildEnvironment } from "../../providerChildEnvironment.ts";
 import { collectUint8StreamText } from "../../stream/collectUint8StreamText.ts";
+import { PI_THINKING_LEVEL_DESCRIPTORS } from "../piThinkingLevels.ts";
 import {
   AcpSessionRuntime,
   type AcpSessionRuntimeOptions,
@@ -72,27 +75,46 @@ const PRIME_SESSION_DETECT_POLL_MS = 100;
 // the header timestamp and the host's spawn timestamp.
 const PRIME_SESSION_DETECT_CLOCK_SKEW_MS = 2_000;
 
+// Mirrors prime-agent's own `BUILT_IN_PROVIDER_DISPLAY_NAMES`
+// (dist/core/provider-display-names.js) so picker group headers and the
+// health auth label read the way Prime's picker does. `openai-codex` is not
+// in that table (Prime labels it through its OAuth provider entry, "ChatGPT
+// Plus/Pro (Codex Subscription)"); the short form below keeps it distinct
+// from the API-key `openai` provider.
 const PRIME_UPSTREAM_PROVIDER_NAMES: Readonly<Record<string, string>> = {
   anthropic: "Anthropic",
-  "openai-codex": "OpenAI",
+  "amazon-bedrock": "Amazon Bedrock",
+  "azure-openai-responses": "Azure OpenAI Responses",
   cerebras: "Cerebras",
+  "cloudflare-ai-gateway": "Cloudflare AI Gateway",
+  "cloudflare-workers-ai": "Cloudflare Workers AI",
+  deepseek: "DeepSeek",
+  fireworks: "Fireworks",
+  google: "Google Gemini",
+  "google-vertex": "Google Vertex AI",
+  groq: "Groq",
+  huggingface: "Hugging Face",
+  "kimi-coding": "Kimi For Coding",
+  mistral: "Mistral",
+  minimax: "MiniMax",
+  "minimax-cn": "MiniMax (China)",
+  moonshotai: "Moonshot AI",
+  "moonshotai-cn": "Moonshot AI (China)",
+  opencode: "OpenCode Zen",
+  "opencode-go": "OpenCode Go",
+  openai: "OpenAI",
+  "openai-codex": "OpenAI Codex",
+  openrouter: "OpenRouter",
+  "prime-agent-traces": "Prime Agent Traces",
+  "prime-inference": "Prime Inference",
+  "vercel-ai-gateway": "Vercel AI Gateway",
+  xai: "xAI",
+  zai: "ZAI",
+  xiaomi: "Xiaomi MiMo",
+  "xiaomi-token-plan-cn": "Xiaomi MiMo Token Plan (China)",
+  "xiaomi-token-plan-ams": "Xiaomi MiMo Token Plan (Amsterdam)",
+  "xiaomi-token-plan-sgp": "Xiaomi MiMo Token Plan (Singapore)",
 };
-
-// Mirrors the Pi adapter's thinking-level trait so the web thinking picker
-// renders identically for both Pi-lineage harnesses.
-const PRIME_THINKING_LEVEL_DESCRIPTORS: ReadonlyArray<{
-  readonly value: PrimeThinkingLevel;
-  readonly label: string;
-  readonly description: string;
-}> = [
-  { value: "off", label: "Off", description: "No extra reasoning" },
-  { value: "minimal", label: "Minimal", description: "Light reasoning" },
-  { value: "low", label: "Low", description: "Faster reasoning" },
-  { value: "medium", label: "Medium", description: "Balanced reasoning" },
-  { value: "high", label: "High", description: "Deeper reasoning" },
-  { value: "xhigh", label: "Extra High", description: "Extra-high reasoning" },
-  { value: "max", label: "Max", description: "Maximum reasoning" },
-];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -150,6 +172,7 @@ export function buildPrimeModelFlag(
   return thinkingLevel ? `${slug}:${thinkingLevel}` : slug;
 }
 
+/** Prime's display name for an upstream provider id; unknown ids get a capitalized slug. */
 export function formatPrimeUpstreamProviderName(providerId: string): string {
   const known = PRIME_UPSTREAM_PROVIDER_NAMES[providerId];
   if (known) {
@@ -322,7 +345,7 @@ function collectStreamAsString<E>(stream: Stream.Stream<Uint8Array, E>): Effect.
  */
 export const runPrimeRpcDiscovery = (
   input: PrimeRpcDiscoveryInput,
-): Effect.Effect<PrimeRpcDiscoveryResult, unknown, Scope.Scope> =>
+): Effect.Effect<PrimeRpcDiscoveryResult, PlatformError.PlatformError, Scope.Scope> =>
   Effect.gen(function* () {
     const cwd = input.cwd ?? nodeOs.tmpdir();
     const agentDir = trimToUndefined(input.agentDir);
@@ -519,7 +542,7 @@ export function toPrimeProviderModelDescriptor(
   defaultThinkingLevel: PrimeThinkingLevel | undefined,
 ): ProviderModelDescriptor {
   const supportedLevels = getPrimeSupportedThinkingLevels(model);
-  const supportedDescriptors = PRIME_THINKING_LEVEL_DESCRIPTORS.filter((descriptor) =>
+  const supportedDescriptors = PI_THINKING_LEVEL_DESCRIPTORS.filter((descriptor) =>
     supportedLevels.includes(descriptor.value),
   );
   return {
@@ -793,18 +816,33 @@ async function samePrimeSessionCwd(left: string, right: string): Promise<boolean
   return leftReal !== undefined && leftReal === rightReal;
 }
 
+export interface PrimeSessionDetectInput {
+  readonly before: PrimeSessionFileSnapshot;
+  readonly cwd: string;
+  /** Spawn time; headers stamped earlier than this (minus clock skew) belong to older sessions. */
+  readonly sinceMs: number;
+  readonly timeoutMs: number;
+  readonly pollMs?: number;
+  /**
+   * Header ids already bound to other live sessions in the same sessions dir.
+   * Callers serialize snapshot -> spawn -> detect per directory, so this only
+   * matters for a deferred retry whose snapshot predates other sessions' files.
+   */
+  readonly claimedSessionIds?: ReadonlySet<string>;
+}
+
 /**
- * Polls the sessions dir for a `.jsonl` that was not in the snapshot and whose
- * header cwd is the session's cwd. Prime writes the header at process start,
- * so the file normally exists before `session/new` returns.
+ * Polls the sessions dir for a `.jsonl` that was not in the snapshot, whose
+ * header cwd is the session's cwd, and whose header id no other live session
+ * has claimed. Prime writes the header at process start, so the file normally
+ * exists before `session/new` returns.
  */
 export async function detectNewPrimeSession(
-  before: PrimeSessionFileSnapshot,
-  cwd: string,
-  sinceMs: number,
-  timeoutMs: number,
-  pollMs: number = PRIME_SESSION_DETECT_POLL_MS,
+  input: PrimeSessionDetectInput,
 ): Promise<PrimeDetectedSession | undefined> {
+  const { before, cwd, sinceMs, timeoutMs } = input;
+  const pollMs = input.pollMs ?? PRIME_SESSION_DETECT_POLL_MS;
+  const claimedSessionIds = input.claimedSessionIds ?? new Set<string>();
   const deadline = Date.now() + timeoutMs;
   const rejected = new Set<string>();
   for (;;) {
@@ -815,6 +853,10 @@ export async function detectNewPrimeSession(
       const header = await readPrimeSessionHeader(file);
       if (header === undefined) {
         // Prime may still be writing the header; look again on the next poll.
+        continue;
+      }
+      if (claimedSessionIds.has(header.id)) {
+        rejected.add(name);
         continue;
       }
       const startedMs =

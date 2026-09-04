@@ -26,6 +26,14 @@ export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
     date: "Sep 2",
     features: [
       {
+        id: "prime-agent-provider",
+        title: "Work with Prime Agent from the same Synara workspace",
+        description:
+          "Prime joins Synara as a first-class ACP provider with its own model registry, thinking levels, skills, slash commands, compaction, and MCP tools.",
+        details:
+          "Synara starts `prime-agent --mode acp` for each thread, resumes threads through Prime's own session ids, lists every model its credentials unlock grouped by upstream provider with a per-model thinking-level picker, runs `/compact` natively, exposes Prime skills and slash commands, and passes its browser and gateway MCP tools into the session. Authentication stays owned by Prime through `/login`, whose credentials Synara reads from `~/.prime/agent/auth.json` without duplicating them. Plan mode is a prompt-prefix emulation, live-turn steering is not advertised, and the approval-required runtime mode is unavailable because Prime never requests permissions.",
+      },
+      {
         id: "claude-fable-5-1",
         title: "Use Claude Fable 5.1 across Claude and Pi",
         description:

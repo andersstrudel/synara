@@ -358,8 +358,8 @@ const HOME_ORIGIN_ORDER = [
   "factory",
   "opencode",
   "pi",
-  "prime",
   "devin",
+  "prime",
   "agents",
 ] as const;
 export type SkillsCatalogOrigin = (typeof HOME_ORIGIN_ORDER)[number] | "project";

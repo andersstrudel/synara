@@ -387,18 +387,19 @@ const PROVIDER_INSTALL_SETTINGS: readonly ProviderInstallSettings[] = [
         placeholder: "prime-agent",
         description: (
           <>
-            Leave blank to use <code>prime-agent</code> from your PATH. Uses the models and
-            credentials configured in prime-agent (<code>/login</code>).
+            Leave blank to use <code>prime-agent</code> from your PATH. Synara uses the models and
+            credentials you set up in Prime Agent (run <code>prime-agent</code>, then{" "}
+            <code>/login</code>).
           </>
         ),
       },
       {
         kind: "text",
         settingsKey: "primeAgentDir",
-        label: "Prime agent directory",
+        label: "Prime Agent directory",
         placeholder: "~/.prime/agent",
         description:
-          "Optional custom Prime agent directory for auth, models, skills, and commands.",
+          "Optional Prime Agent home directory for credentials, models, skills, and commands.",
       },
     ],
   },

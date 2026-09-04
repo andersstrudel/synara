@@ -19,6 +19,7 @@ import {
   buildPrimeRpcDiscoveryArgs,
   detectNewPrimeSession,
   formatPrimeContextWindow,
+  formatPrimeUpstreamProviderName,
   getPrimeSupportedThinkingLevels,
   makePrimeAcpRuntime,
   mapPrimeCommands,
@@ -121,15 +122,31 @@ const PRIME_RPC_STATE_DATA = {
   sessionId: "01a06d2f-5637-76a4-8b0c-8d175a3fb6b2",
 };
 
+// `get_commands` shape from `prime-agent 0.9.1 --mode rpc`: skills carry
+// `source: "skill"` plus `sourceInfo.{source,scope,path}`, where `source` is
+// "builtin" for skills shipped inside the package and "auto" for discovered ones.
 const PRIME_RPC_COMMANDS_DATA = {
   commands: [
     {
       name: "skill:websearch",
       description: "Search the web",
       source: "skill",
-      sourceInfo: { path: "/home/test/.prime/agent/skills/websearch/SKILL.md" },
+      sourceInfo: {
+        source: "auto",
+        scope: "user",
+        path: "/home/test/.prime/agent/skills/websearch/SKILL.md",
+      },
     },
-    { name: "skill:compact", description: "Compact the session", source: "skill" },
+    {
+      name: "skill:compact",
+      description: "Compact the session",
+      source: "skill",
+      sourceInfo: {
+        source: "builtin",
+        scope: "user",
+        path: "/opt/prime-agent/dist/skills/compact/SKILL.md",
+      },
+    },
     { name: "review", source: "prompt" },
     { name: "", description: "ignored: empty name" },
   ],
@@ -184,14 +201,15 @@ describe("buildPrimeAcpSpawnInput", () => {
     });
   });
 
-  it("scopes the agent dir through the environment and strips host secrets", () => {
+  it("scopes the agent dir through the environment, keeps upstream provider keys, and strips Synara authority", () => {
     const spawn = buildPrimeAcpSpawnInput(
       { agentDir: "/custom/prime/agent" },
       "/tmp/project",
       "approval-required",
       {
         HOME: "/real/home",
-        ANTHROPIC_API_KEY: "host-secret",
+        ANTHROPIC_API_KEY: "upstream-key",
+        OPENAI_API_KEY: "upstream-openai-key",
         SYNARA_AGENT_GATEWAY_BOOTSTRAP_TOKEN: "bootstrap-must-not-propagate",
       },
     );
@@ -200,8 +218,11 @@ describe("buildPrimeAcpSpawnInput", () => {
     expect(spawn.env).toMatchObject({
       HOME: "/real/home",
       PRIME_AGENT_CODING_AGENT_DIR: "/custom/prime/agent",
+      // Prime's model registry reads upstream API keys from the environment
+      // (like Pi), so the host's provider credentials must reach the child.
+      ANTHROPIC_API_KEY: "upstream-key",
+      OPENAI_API_KEY: "upstream-openai-key",
     });
-    expect(spawn.env?.ANTHROPIC_API_KEY).toBeUndefined();
     expect(spawn.env?.SYNARA_AGENT_GATEWAY_BOOTSTRAP_TOKEN).toBeUndefined();
   });
 
@@ -370,6 +391,55 @@ describe("parsePrimeModelRegistry", () => {
     expect(models.find((model) => model.slug === "cerebras/gpt-oss-120b")).toMatchObject({
       description: "cerebras · 131K context",
     });
+    expect(models.find((model) => model.slug === "openai-codex/gpt-5.6-sol")).toMatchObject({
+      upstreamProviderId: "openai-codex",
+      upstreamProviderName: "OpenAI Codex",
+    });
+  });
+
+  it("labels upstream providers the way prime-agent's own picker does", () => {
+    // Mirrors prime-agent's BUILT_IN_PROVIDER_DISPLAY_NAMES.
+    expect(
+      Object.fromEntries(
+        [
+          "openai",
+          "openrouter",
+          "xai",
+          "google",
+          "google-vertex",
+          "zai",
+          "deepseek",
+          "prime-inference",
+          "amazon-bedrock",
+          "kimi-coding",
+          "minimax",
+          "groq",
+          "mistral",
+          "cerebras",
+          "anthropic",
+        ].map((providerId) => [providerId, formatPrimeUpstreamProviderName(providerId)]),
+      ),
+    ).toEqual({
+      openai: "OpenAI",
+      openrouter: "OpenRouter",
+      xai: "xAI",
+      google: "Google Gemini",
+      "google-vertex": "Google Vertex AI",
+      zai: "ZAI",
+      deepseek: "DeepSeek",
+      "prime-inference": "Prime Inference",
+      "amazon-bedrock": "Amazon Bedrock",
+      "kimi-coding": "Kimi For Coding",
+      minimax: "MiniMax",
+      groq: "Groq",
+      mistral: "Mistral",
+      cerebras: "Cerebras",
+      anthropic: "Anthropic",
+    });
+    // Not in Prime's table (Prime labels it via its OAuth entry); kept distinct from `openai`.
+    expect(formatPrimeUpstreamProviderName("openai-codex")).toBe("OpenAI Codex");
+    // Unknown ids (e.g. a user-defined models.json provider) fall back to a capitalized slug.
+    expect(formatPrimeUpstreamProviderName("my-proxy")).toBe("My-proxy");
   });
 
   it("filters thinking levels the model maps to null and mirrors Pi's option labels", () => {
@@ -482,8 +552,17 @@ describe("Prime commands", () => {
         description: "Search the web",
         source: "skill",
         path: "/home/test/.prime/agent/skills/websearch/SKILL.md",
+        origin: "auto",
+        scope: "user",
       },
-      { name: "skill:compact", description: "Compact the session", source: "skill" },
+      {
+        name: "skill:compact",
+        description: "Compact the session",
+        source: "skill",
+        path: "/opt/prime-agent/dist/skills/compact/SKILL.md",
+        origin: "builtin",
+        scope: "user",
+      },
       { name: "review", source: "prompt" },
     ]);
     expect(mapPrimeCommands(commands)).toEqual([
@@ -491,6 +570,23 @@ describe("Prime commands", () => {
       { name: "skill:websearch", description: "Search the web" },
       { name: "skill:compact", description: "Compact the session" },
       { name: "review" },
+    ]);
+    // The same answer feeds the skills listing: built-ins take Prime's own scope.
+    expect(mapPrimeSkills(commands)).toEqual([
+      {
+        name: "websearch",
+        description: "Search the web",
+        path: "/home/test/.prime/agent/skills/websearch/SKILL.md",
+        enabled: true,
+        scope: "user",
+      },
+      {
+        name: "compact",
+        description: "Compact the session",
+        path: "/opt/prime-agent/dist/skills/compact/SKILL.md",
+        enabled: true,
+        scope: "prime",
+      },
     ]);
   });
 
@@ -607,7 +703,7 @@ describe("Prime session files", () => {
     expect(before.files).toEqual(new Set(["old.jsonl"]));
     const sinceMs = Date.now();
 
-    const detection = detectNewPrimeSession(before, cwd, sinceMs, 2_000, 10);
+    const detection = detectNewPrimeSession({ before, cwd, sinceMs, timeoutMs: 2_000, pollMs: 10 });
     await new Promise((resolve) => setTimeout(resolve, 30));
     // A file for another cwd must not be claimed by this session.
     await writeFile(
@@ -629,7 +725,13 @@ describe("Prime session files", () => {
     const { root, sessionsDir } = await makeSessionsDir();
     const before = await snapshotPrimeSessionFiles(sessionsDir);
     await expect(
-      detectNewPrimeSession(before, path.join(root, "work"), Date.now(), 50, 10),
+      detectNewPrimeSession({
+        before,
+        cwd: path.join(root, "work"),
+        sinceMs: Date.now(),
+        timeoutMs: 50,
+        pollMs: 10,
+      }),
     ).resolves.toBeUndefined();
   });
 
@@ -642,7 +744,47 @@ describe("Prime session files", () => {
       path.join(sessionsDir, "stale.jsonl"),
       sessionHeader("stale-id", cwd, new Date(Date.now() - 60_000).toISOString()),
     );
-    await expect(detectNewPrimeSession(before, cwd, Date.now(), 50, 10)).resolves.toBeUndefined();
+    await expect(
+      detectNewPrimeSession({ before, cwd, sinceMs: Date.now(), timeoutMs: 50, pollMs: 10 }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("never re-binds a header id another live session already claimed", async () => {
+    const { root, sessionsDir } = await makeSessionsDir();
+    const cwd = path.join(root, "work");
+    await mkdir(cwd, { recursive: true });
+    const before = await snapshotPrimeSessionFiles(sessionsDir);
+    const sinceMs = Date.now();
+    // The claimed file is the earlier one, so it would win on timestamp alone.
+    await writeFile(
+      path.join(sessionsDir, "claimed.jsonl"),
+      sessionHeader("claimed-id", cwd, new Date(sinceMs).toISOString()),
+    );
+    await writeFile(
+      path.join(sessionsDir, "mine.jsonl"),
+      sessionHeader("my-id", cwd, new Date(sinceMs + 5).toISOString()),
+    );
+
+    await expect(
+      detectNewPrimeSession({
+        before,
+        cwd,
+        sinceMs,
+        timeoutMs: 200,
+        pollMs: 10,
+        claimedSessionIds: new Set(["claimed-id"]),
+      }),
+    ).resolves.toEqual({ sessionId: "my-id", file: path.join(sessionsDir, "mine.jsonl") });
+    await expect(
+      detectNewPrimeSession({
+        before,
+        cwd,
+        sinceMs,
+        timeoutMs: 50,
+        pollMs: 10,
+        claimedSessionIds: new Set(["claimed-id", "my-id"]),
+      }),
+    ).resolves.toBeUndefined();
   });
 
   it("resolves a session by absolute path, basename, or header id", async () => {

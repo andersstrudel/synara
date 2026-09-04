@@ -124,6 +124,7 @@ test("provider cards use stable runtime capabilities instead of volatile model m
     "Devin CLI",
     "Pi",
     "Factory Droid",
+    "Prime",
   ]) {
     assert.ok(features.includes(`name: \"${provider}\"`), `missing provider card for ${provider}`);
   }
@@ -145,6 +146,7 @@ test("provider cards use stable runtime capabilities instead of volatile model m
     "ACP + account",
     "Model registry",
     "droid CLI",
+    "prime-agent CLI",
   ]) {
     assert.ok(features.includes(stableLabel), `stable capability label is missing: ${stableLabel}`);
   }

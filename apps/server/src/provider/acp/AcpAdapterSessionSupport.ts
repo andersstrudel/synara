@@ -212,8 +212,9 @@ export function waitForAcpQueuedTurnEventsDrained(input: {
 export function forkAcpAdapterTurnIdleWatchdog(input: {
   readonly context: {
     readonly scope: Scope.Closeable;
-    readonly pendingApprovals: { readonly size: number };
-    readonly pendingUserInputs: { readonly size: number };
+    // Absent for agents that never open approval or user-input requests.
+    readonly pendingApprovals?: { readonly size: number };
+    readonly pendingUserInputs?: { readonly size: number };
     activeTurnId: TurnId | undefined;
     lastTurnActivityAt: number | undefined;
     stopped: boolean;
@@ -231,7 +232,8 @@ export function forkAcpAdapterTurnIdleWatchdog(input: {
     checkIntervalMs: input.checkIntervalMs,
     scope: context.scope,
     isTurnActive: () => context.activeTurnId === input.turnId && !context.stopped,
-    isAwaitingHuman: () => context.pendingApprovals.size > 0 || context.pendingUserInputs.size > 0,
+    isAwaitingHuman: () =>
+      (context.pendingApprovals?.size ?? 0) > 0 || (context.pendingUserInputs?.size ?? 0) > 0,
     lastActivityAt: () => context.lastTurnActivityAt ?? Date.now(),
     touchActivity: () => {
       context.lastTurnActivityAt = Date.now();

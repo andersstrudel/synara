@@ -74,6 +74,13 @@ const PROVIDERS = [
     authMarker: "FACTORY_API_KEY",
     officialDomain: "docs.factory.ai",
   },
+  {
+    slug: "prime",
+    title: "Prime",
+    executable: "prime-agent",
+    authMarker: "/login",
+    officialDomain: "github.com/PrimeIntellect-ai/prime-agent",
+  },
 ];
 
 const REQUIRED_SECTIONS = [

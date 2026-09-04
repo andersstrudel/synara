@@ -7,14 +7,16 @@
  * thread resumes by relaunching the CLI with `--resume <session id>` followed
  * by a fresh `session/new` (Prime does not implement `session/load`).
  *
+ * Context-window usage is tailed from Prime's session file (see
+ * `PrimeSessionUsageTail`): Prime's ACP mode never sends `usage_update`, but
+ * the file records exact usage for every LLM call.
+ *
  * @module PrimeAdapterLive
  */
 import {
-  ApprovalRequestId,
   type ChatAttachment,
   EventId,
   type PrimeModelOptions,
-  type ProviderApprovalDecision,
   type ProviderComposerCapabilities,
   type ProviderInteractionMode,
   ProviderListCommandsInput,
@@ -24,9 +26,7 @@ import {
   type ProviderListSkillsResult,
   type ProviderRuntimeEvent,
   type ProviderSession,
-  type ProviderUserInputAnswers,
   RuntimeItemId,
-  RuntimeRequestId,
   type RuntimeMode,
   ThreadId,
   TurnId,
@@ -77,8 +77,6 @@ import {
   classifyAcpPromptTurnCompletion,
   mapAcpToAdapterError,
   readAcpFailedToolDetail,
-  resolveAcpPermissionPolicy,
-  selectAcpPermissionOptionId,
 } from "../acp/AcpAdapterSupport.ts";
 import {
   acceptAcpPlanUpdate,
@@ -91,8 +89,6 @@ import {
   resolveAcpTurnInteractionMode,
   scopeAcpRuntimeItemIdForTurn,
   scopeAcpToolCallStateForTurn,
-  settleAcpPendingApprovalsAsCancelled,
-  settleAcpPendingUserInputsAsEmptyAnswers,
   waitForAcpQueuedTurnEventsDrained,
   withAcpPlanModePrompt,
 } from "../acp/AcpAdapterSessionSupport.ts";
@@ -100,17 +96,11 @@ import {
   makeAcpAssistantItemEvent,
   makeAcpContentDeltaEvent,
   makeAcpPlanUpdatedEvent,
-  makeAcpRequestOpenedEvent,
-  makeAcpRequestResolvedEvent,
   makeAcpTokenUsageEvent,
   makeAcpToolCallEvent,
   stampAcpRuntimeEventLifecycleGeneration,
 } from "../acp/AcpCoreRuntimeEvents.ts";
-import {
-  type AcpPlanUpdate,
-  type AcpToolCallState,
-  parsePermissionRequest,
-} from "../acp/AcpRuntimeModel.ts";
+import { type AcpPlanUpdate, type AcpToolCallState } from "../acp/AcpRuntimeModel.ts";
 import {
   redactAcpLogSecrets,
   makeAcpDebugLoggers,
@@ -121,11 +111,6 @@ import {
   resolveAcpTurnIdleTimeoutMs,
 } from "../acp/AcpTurnIdleWatchdog.ts";
 import {
-  elicitationQuestionsFromRequest,
-  elicitationResponseFromAnswers,
-  isFormElicitationRequest,
-} from "../acp/AcpElicitationSupport.ts";
-import {
   buildPrimeModelFlag,
   detectNewPrimeSession,
   makePrimeAcpRuntime,
@@ -134,6 +119,7 @@ import {
   type PrimeCommandDescriptor,
   parsePrimeCommands,
   parsePrimeModelRegistry,
+  parsePrimeRegistryModels,
   PRIME_LOGIN_GUIDANCE,
   PRIME_RPC_COMMANDS_REQUEST_ID,
   PRIME_RPC_MODELS_REQUEST_ID,
@@ -154,6 +140,17 @@ import {
   type AcpSessionRuntimeShape,
   type AcpSessionRuntimeStartResult,
 } from "../acp/AcpSessionRuntime.ts";
+import {
+  describePrimeSessionEntry,
+  type PrimeSessionModel,
+  readPrimeCompactionEntry,
+  resolvePrimeSessionUsageModel,
+  snapshotPrimeSessionUsage,
+} from "../acp/PrimeSessionUsage.ts";
+import {
+  makePrimeSessionUsageTail,
+  type PrimeSessionUsageUpdate,
+} from "../acp/PrimeSessionUsageTail.ts";
 import { makeEventNdjsonLogger, type EventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import {
   PROVIDER_ADAPTER_RUNTIME_EVENT_BUFFER_CAPACITY,
@@ -185,14 +182,17 @@ const PRIME_SESSION_DETECT_RETRY_TIMEOUT_MS = 1_000;
 // times before surfacing the failure.
 const PRIME_RESUME_START_ATTEMPTS = 3;
 const PRIME_RESUME_START_RETRY_DELAY_MS = 1_500;
-// Backstop for an alive-but-silent prime child: if a turn produces no ACP
-// activity for this long, force-fail it instead of showing "Working" forever.
+// Bounded wait for queued session updates to be consumed before a turn
+// settles, so late tool/content state is folded into its completion.
 const PRIME_TURN_SETTLE_DRAIN_MAX_WAIT_MS = 1_000;
 const PRIME_TURN_SETTLE_DRAIN_POLL_MS = 25;
 // After a timed-out /compact the cancel is only best-effort: the child may
 // still stream stale compaction updates for a moment. Hold new turns for this
 // long so those events cannot be attributed to the next active turn.
 const PRIME_COMPACT_ABANDON_QUIET_MS = 5_000;
+// Row title for compactions Prime performs on its own mid-turn (manual /compact
+// completes through thread.state.changed instead).
+const PRIME_COMPACTION_COMPLETED_TITLE = "Context compacted";
 // Bounded wait for the forked post-timeout cancel to be written before the
 // next prompt is dispatched (stdio delivers in order).
 const PRIME_COMPACT_CANCEL_WAIT_MS = 10_000;
@@ -201,6 +201,21 @@ const PRIME_COMPACT_CANCEL_WAIT_MS = 10_000;
 // go quiet (bounded) before deciding success.
 const PRIME_COMPACT_OUTCOME_QUIET_MS = 200;
 const PRIME_COMPACT_OUTCOME_MAX_WAIT_MS = 2_000;
+// Prime's ACP mode never sends usage_update; context usage is tailed from the
+// session file instead. The watcher is primary; the poll (fast while a turn
+// or compaction is in flight, slow otherwise) covers coalesced watch events.
+const PRIME_SESSION_USAGE_ACTIVE_POLL_MS = 250;
+const PRIME_SESSION_USAGE_IDLE_POLL_MS = 2_000;
+// Prime writes its compaction entry before the /compact prompt answers, so
+// the tail sees the reduced context while compactingThread is still set. The
+// meter treats a completed compaction as invalidating whatever snapshot came
+// before it, so usage observed during that window is held until the terminal
+// compaction event is out, bounded by this delay.
+const PRIME_SESSION_USAGE_COMPACTION_HOLD_MS = 1_000;
+// A failed registry probe for a model's context window is not retried on
+// every usage line; the dial keeps working without maxTokens meanwhile.
+const PRIME_CONTEXT_WINDOW_DISCOVERY_RETRY_MS = 60_000;
+const PRIME_SESSION_FILE_USAGE_METHOD = "session/file";
 
 const PRIME_PLAN_MODE_PROMPT_PREFIX = [
   "Prime Agent plan mode is active.",
@@ -213,6 +228,7 @@ export interface PrimeAdapterTimeouts {
   readonly turnIdleMs: number;
   readonly toolIdleMs: number;
   readonly sessionDetectMs: number;
+  readonly resumeStartRetryDelayMs: number;
 }
 
 export function resolvePrimeAdapterTimeouts(
@@ -230,6 +246,7 @@ export function resolvePrimeAdapterTimeouts(
       env,
     }),
     sessionDetectMs: PRIME_SESSION_DETECT_TIMEOUT_MS,
+    resumeStartRetryDelayMs: PRIME_RESUME_START_RETRY_DELAY_MS,
   };
 }
 
@@ -240,15 +257,6 @@ interface PrimeAdapterLiveOptions {
   readonly runRpcDiscovery?: typeof runPrimeRpcDiscovery;
   readonly onSessionUpdateProcessed?: () => void;
   readonly timeouts?: PrimeAdapterTimeouts;
-}
-
-interface PendingApproval {
-  readonly decision: Deferred.Deferred<ProviderApprovalDecision>;
-  readonly kind: string;
-}
-
-interface PendingUserInput {
-  readonly answers: Deferred.Deferred<ProviderUserInputAnswers>;
 }
 
 interface PrimeSessionDetection {
@@ -268,8 +276,6 @@ interface PrimeSessionContext extends SynaraHarnessPolicyDeliveryState {
   readonly scope: Scope.Closeable;
   readonly acp: AcpSessionRuntimeShape;
   notificationFiber: Fiber.Fiber<void, never> | undefined;
-  pendingApprovals: Map<ApprovalRequestId, PendingApproval>;
-  pendingUserInputs: Map<ApprovalRequestId, PendingUserInput>;
   turns: Array<ProviderThreadTurnSnapshot>;
   activeInteractionMode: ProviderInteractionMode | undefined;
   activeTurnId: TurnId | undefined;
@@ -310,8 +316,24 @@ interface PrimeSessionContext extends SynaraHarnessPolicyDeliveryState {
   compactionQuietUntil: number | undefined;
   compactionCancelFiber: Fiber.Fiber<void> | undefined;
   latestSessionCostUsd: number | undefined;
+  // Registry probe target (binary + agent dir) for context-window lookups.
+  readonly discoveryTarget: PrimeDiscoveryTarget;
+  // Usage tail bound to Prime's session file once it has been located (fresh
+  // detection or resume). The tail fiber lives in `scope`.
+  sessionUsageTail: PrimeSessionUsageTailHandle | undefined;
+  // Usage emission deferred while a manual compaction is in flight (see
+  // PRIME_SESSION_USAGE_COMPACTION_HOLD_MS); the hold fiber flushes it if the
+  // compaction outcome takes longer than the bound.
+  pendingSessionUsageEmit: Effect.Effect<void> | undefined;
+  pendingSessionUsageHoldFiber: Fiber.Fiber<void> | undefined;
   stopped: boolean;
   gatewaySessionLease: AgentGatewaySessionLease | undefined;
+}
+
+interface PrimeSessionUsageTailHandle {
+  readonly file: string;
+  readonly flush: Effect.Effect<void>;
+  readonly fiber: Fiber.Fiber<void>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -630,7 +652,39 @@ export function makePrimeAdapter(
       { readonly expiresAt: number; readonly descriptors: ReadonlyArray<PrimeCommandDescriptor> }
     >();
     const discoveryLock = yield* Semaphore.make(1);
+    // `provider/model` -> contextWindow per discovery target, filled from the
+    // same get_available_models answer that backs listModels. Bounded like the
+    // discovery caches (one entry per target).
+    const primeContextWindows = new Map<
+      string,
+      { readonly expiresAt: number; readonly windows: ReadonlyMap<string, number> }
+    >();
+    const primeContextWindowRetryAt = new Map<string, number>();
     const withThreadLock = yield* makeAcpThreadLock();
+    // One lock per Prime sessions dir. A fresh start holds it from its
+    // pre-spawn snapshot until session-file detection settles, so two fresh
+    // starts in the same dir can never both claim the earliest new file.
+    const sessionsDirLocks = new Map<string, Semaphore.Semaphore>();
+    const sessionsDirLock = (sessionsDir: string): Semaphore.Semaphore => {
+      const existing = sessionsDirLocks.get(sessionsDir);
+      if (existing !== undefined) {
+        return existing;
+      }
+      const lock = Semaphore.makeUnsafe(1);
+      sessionsDirLocks.set(sessionsDir, lock);
+      return lock;
+    };
+    // Prime session ids already bound to other live contexts; detection must
+    // never re-bind one of them to a second thread.
+    const claimedPrimeSessionIds = (except: PrimeSessionContext): ReadonlySet<string> => {
+      const claimed = new Set<string>();
+      for (const other of sessions.values()) {
+        if (other !== except && other.primeSessionId !== undefined) {
+          claimed.add(other.primeSessionId);
+        }
+      }
+      return claimed;
+    };
     const runtimeEventPubSub = yield* PubSub.bounded<ProviderRuntimeEvent>(
       PROVIDER_ADAPTER_RUNTIME_EVENT_BUFFER_CAPACITY,
     );
@@ -680,6 +734,19 @@ export function makePrimeAdapter(
         const settings = yield* Effect.promise(() =>
           readPrimeUserSettings(resolvePrimeAgentDir(target.agentDir)),
         );
+        const windows = new Map<string, number>();
+        for (const registryModel of parsePrimeRegistryModels(modelsResponse.data)) {
+          if (registryModel.contextWindow !== undefined) {
+            windows.set(
+              `${registryModel.provider}/${registryModel.id}`,
+              registryModel.contextWindow,
+            );
+          }
+        }
+        setPrimeDiscoveryCacheEntry(primeContextWindows, primeDiscoveryCacheKey(target), {
+          expiresAt: Date.now() + PRIME_MODEL_DISCOVERY_CACHE_MS,
+          windows,
+        });
         const models = parsePrimeModelRegistry({
           models: modelsResponse.data,
           state: stateResponse?.success === false ? undefined : stateResponse?.data,
@@ -795,14 +862,18 @@ export function makePrimeAdapter(
         clearPrimeActiveToolCallIdleState(ctx);
         yield* cancelAgentGatewayTurn(ctx.gatewaySessionLease, ctx.activeTurnId);
         ctx.gatewaySessionLease?.release();
-        yield* settleAcpPendingApprovalsAsCancelled(ctx.pendingApprovals);
-        yield* settleAcpPendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
         if (ctx.sessionConfigReady !== undefined) {
           yield* Deferred.succeed(ctx.sessionConfigReady, undefined);
           ctx.sessionConfigReady = undefined;
         }
         if (ctx.notificationFiber) {
           yield* Fiber.interrupt(ctx.notificationFiber);
+        }
+        ctx.pendingSessionUsageEmit = undefined;
+        const sessionUsageTail = ctx.sessionUsageTail;
+        ctx.sessionUsageTail = undefined;
+        if (sessionUsageTail !== undefined) {
+          yield* Fiber.interrupt(sessionUsageTail.fiber);
         }
         yield* Effect.ignore(Scope.close(ctx.scope, Exit.void));
         sessions.delete(ctx.threadId);
@@ -938,6 +1009,197 @@ export function makePrimeAdapter(
         };
       });
 
+    // Context window for the model that produced a usage line, from Prime's
+    // registry. Served from the discovery cache; a cold cache runs one probe
+    // (serialized and cached for five minutes like listModels), and a failed
+    // probe backs off so a busy turn never blocks on it repeatedly.
+    const resolvePrimeContextWindow = (ctx: PrimeSessionContext, model: PrimeSessionModel) =>
+      Effect.gen(function* () {
+        const slug = `${model.provider}/${model.modelId}`;
+        const cacheKey = primeDiscoveryCacheKey(ctx.discoveryTarget);
+        const known = primeContextWindows.get(cacheKey)?.windows.get(slug);
+        if (known !== undefined) {
+          return known;
+        }
+        const retryAt = primeContextWindowRetryAt.get(cacheKey);
+        if (retryAt !== undefined && retryAt > Date.now()) {
+          return undefined;
+        }
+        const result = yield* discoverPrimeModels(ctx.discoveryTarget);
+        if (result.error !== undefined) {
+          primeContextWindowRetryAt.set(
+            cacheKey,
+            Date.now() + PRIME_CONTEXT_WINDOW_DISCOVERY_RETRY_MS,
+          );
+          yield* Effect.logWarning("prime.acp.session_usage_context_window_unavailable", {
+            threadId: ctx.threadId,
+            model: slug,
+            detail: result.error,
+            retryInMs: PRIME_CONTEXT_WINDOW_DISCOVERY_RETRY_MS,
+          });
+          return undefined;
+        }
+        primeContextWindowRetryAt.delete(cacheKey);
+        return primeContextWindows.get(cacheKey)?.windows.get(slug);
+      });
+
+    // Emits whatever usage the compaction hold deferred. Idempotent: the
+    // compaction outcome path and the hold fiber both call it.
+    const flushPendingPrimeSessionUsage = (ctx: PrimeSessionContext) =>
+      Effect.gen(function* () {
+        const holdFiber = ctx.pendingSessionUsageHoldFiber;
+        ctx.pendingSessionUsageHoldFiber = undefined;
+        const emit = ctx.pendingSessionUsageEmit;
+        ctx.pendingSessionUsageEmit = undefined;
+        if (holdFiber !== undefined) {
+          yield* Fiber.interrupt(holdFiber);
+        }
+        if (emit !== undefined && !ctx.stopped) {
+          yield* emit;
+        }
+      });
+
+    // Tail callback: projects the folded session state onto a usage snapshot
+    // and publishes it the way an ACP usage_update would.
+    const emitPrimeSessionUsage = (ctx: PrimeSessionContext, update: PrimeSessionUsageUpdate) =>
+      Effect.gen(function* () {
+        if (ctx.stopped) {
+          return;
+        }
+        const model = resolvePrimeSessionUsageModel(update.state);
+        const contextWindow =
+          model === undefined ? undefined : yield* resolvePrimeContextWindow(ctx, model);
+        const usage = snapshotPrimeSessionUsage(update.state, contextWindow);
+        if (usage === undefined) {
+          return;
+        }
+        // Cumulative cost rides the same path an ACP cost notification would:
+        // turn.completed reads it when the turn settles (see finalizeAcpActiveTurnCost).
+        if (update.state.costUsd !== undefined) {
+          recordAcpSessionCost(ctx, { amount: update.state.costUsd, currency: "USD" });
+        }
+        const rawPayload = describePrimeSessionEntry(update.entry);
+        // Prime compacts on its own mid-turn once the window fills. The shared
+        // ACP runtime model drops Prime's compaction metadata, so the session
+        // file is the only signal: publish the same row the manual path does,
+        // ahead of the estimate that follows it (a completed compaction resets
+        // the meter, and the estimate then repopulates it).
+        const autoCompaction =
+          update.reason === "estimate" && !ctx.compactingThread
+            ? readPrimeCompactionEntry(update.entry)
+            : undefined;
+        if (autoCompaction !== undefined) {
+          yield* emitPrimeContextCompactionRuntimeEvent(ctx, {
+            lifecycle: "item.completed",
+            status: "completed",
+            title: PRIME_COMPACTION_COMPLETED_TITLE,
+            ...(autoCompaction.tokensBefore !== undefined
+              ? { detail: `Compacted ${autoCompaction.tokensBefore.toLocaleString("en-US")} tokens of context` }
+              : {}),
+          });
+        }
+        const emit = Effect.gen(function* () {
+          if (ctx.stopped) {
+            return;
+          }
+          yield* offerRuntimeEvent(
+            ctx.lifecycleGeneration,
+            makeAcpTokenUsageEvent({
+              stamp: yield* makeEventStamp(),
+              provider: PROVIDER,
+              threadId: ctx.threadId,
+              turnId: ctx.compactingThread ? undefined : ctx.activeTurnId,
+              usage,
+              method: PRIME_SESSION_FILE_USAGE_METHOD,
+              rawPayload,
+            }),
+          );
+        });
+        if (!ctx.compactingThread) {
+          yield* emit;
+          return;
+        }
+        // Manual /compact in flight: the terminal compaction event has not
+        // been published yet and would invalidate this snapshot on the meter.
+        // Keep only the latest snapshot; compactThread flushes it once the
+        // outcome is out, or the hold fiber does after the bound.
+        ctx.pendingSessionUsageEmit = emit;
+        if (ctx.pendingSessionUsageHoldFiber === undefined) {
+          ctx.pendingSessionUsageHoldFiber = yield* Effect.sleep(
+            PRIME_SESSION_USAGE_COMPACTION_HOLD_MS,
+          ).pipe(
+            Effect.andThen(
+              Effect.suspend(() => {
+                // Clear before flushing so the flush never interrupts this fiber.
+                ctx.pendingSessionUsageHoldFiber = undefined;
+                return flushPendingPrimeSessionUsage(ctx);
+              }),
+            ),
+            Effect.forkIn(ctx.scope),
+          );
+        }
+      });
+
+    const flushPrimeSessionUsage = (ctx: PrimeSessionContext) =>
+      ctx.sessionUsageTail?.flush ?? Effect.void;
+
+    // Starts (or replaces) the usage tail for a session file. The fiber lives
+    // in the session scope, so stopSessionInternal, session replacement and
+    // stopAll all end it; the watcher closes with the fiber.
+    const startPrimeSessionUsageTail = (ctx: PrimeSessionContext, file: string) =>
+      Effect.gen(function* () {
+        if (ctx.stopped || ctx.sessionUsageTail?.file === file) {
+          return;
+        }
+        const previous = ctx.sessionUsageTail;
+        ctx.sessionUsageTail = undefined;
+        if (previous !== undefined) {
+          yield* Fiber.interrupt(previous.fiber);
+        }
+        const tail = yield* makePrimeSessionUsageTail({
+          fileSystem,
+          file,
+          isActive: () =>
+            ctx.activeTurnId !== undefined || ctx.turnStarting || ctx.compactingThread,
+          onUpdate: (update) => emitPrimeSessionUsage(ctx, update),
+          activePollMs: PRIME_SESSION_USAGE_ACTIVE_POLL_MS,
+          idlePollMs: PRIME_SESSION_USAGE_IDLE_POLL_MS,
+        });
+        const fiber = yield* tail.run.pipe(
+          // The tail cannot fail; a defect is worth a log line, an interrupt
+          // (session teardown) is not.
+          Effect.tapCause((cause) =>
+            Cause.hasInterruptsOnly(cause)
+              ? Effect.void
+              : Effect.logWarning("prime.acp.session_usage_tail_failed", {
+                  threadId: ctx.threadId,
+                  file,
+                  detail: describeCause(cause),
+                }),
+          ),
+          Effect.ignoreCause(),
+          Effect.forkIn(ctx.scope),
+        );
+        ctx.sessionUsageTail = { file, flush: tail.flush, fiber };
+        yield* Effect.logInfo("prime.acp.session_usage_tail_started", {
+          threadId: ctx.threadId,
+          sessionId: ctx.primeSessionId,
+          file,
+        });
+      });
+
+    // A located session file publishes the resume cursor and starts the
+    // usage tail (its catch-up read reports the current context at once).
+    const bindPrimeSessionFile = (
+      ctx: PrimeSessionContext,
+      binding: { readonly sessionId: string; readonly file: string },
+    ) =>
+      Effect.gen(function* () {
+        yield* publishPrimeSessionId(ctx, binding.sessionId);
+        yield* startPrimeSessionUsageTail(ctx, binding.file);
+      });
+
+    // Callers hold the sessions-dir lock (see sessionsDirLock) while this runs.
     const detectPrimeSessionFile = (
       ctx: PrimeSessionContext,
       detection: PrimeSessionDetection,
@@ -949,7 +1211,13 @@ export function makePrimeAdapter(
           return;
         }
         const detected = yield* Effect.promise(() =>
-          detectNewPrimeSession(detection.snapshot, cwd, detection.spawnedAt, timeoutMs),
+          detectNewPrimeSession({
+            before: detection.snapshot,
+            cwd,
+            sinceMs: detection.spawnedAt,
+            timeoutMs,
+            claimedSessionIds: claimedPrimeSessionIds(ctx),
+          }),
         );
         if (ctx.stopped) {
           return;
@@ -968,7 +1236,7 @@ export function makePrimeAdapter(
           sessionId: detected.sessionId,
           file: detected.file,
         });
-        yield* publishPrimeSessionId(ctx, detected.sessionId);
+        yield* bindPrimeSessionFile(ctx, detected);
       });
 
     const startSession: PrimeAdapterShape["startSession"] = (input) =>
@@ -1005,8 +1273,6 @@ export function makePrimeAdapter(
             yield* stopSessionInternal(existing);
           }
 
-          const pendingApprovals = new Map<ApprovalRequestId, PendingApproval>();
-          const pendingUserInputs = new Map<ApprovalRequestId, PendingUserInput>();
           // Replaced on each resumed-start retry; the finalizer below reads
           // the current value so a retried attempt never leaks its child.
           let sessionScope = yield* Scope.make("sequential");
@@ -1064,8 +1330,9 @@ export function makePrimeAdapter(
           // non-zero for an unknown id, which would fail the whole start.
           const requestedResumeSessionId = parsePrimeResume(input.resumeCursor)?.sessionId;
           let resumeSessionId: string | undefined;
+          let resumeFile: string | undefined;
           if (requestedResumeSessionId !== undefined) {
-            const resumeFile = yield* Effect.promise(() =>
+            resumeFile = yield* Effect.promise(() =>
               resolvePrimeSessionFile(sessionsDir, requestedResumeSessionId),
             );
             if (resumeFile === undefined) {
@@ -1093,6 +1360,15 @@ export function makePrimeAdapter(
             agentDir: effectivePrimeSettings.agentDir,
           });
 
+          // A fresh start binds to the session file Prime writes at process
+          // start. Hold the sessions-dir lock for the rest of this start (the
+          // startSession scope releases it after detection) so overlapping
+          // fresh starts snapshot -> spawn -> detect one at a time.
+          if (resumeSessionId === undefined) {
+            const lock = sessionsDirLock(sessionsDir);
+            yield* Effect.acquireRelease(lock.take(1), () => lock.release(1));
+          }
+
           // Snapshot the sessions dir before Prime can write its new file so
           // the post-start detection has a stable "before" set.
           const sessionDetection: PrimeSessionDetection | undefined =
@@ -1115,7 +1391,6 @@ export function makePrimeAdapter(
                   ...(resumeSessionId !== undefined ? { resumeSessionId } : {}),
                 },
                 clientInfo: { name: "Synara", version: "0.0.0" },
-                clientCapabilities: { elicitation: { form: {} } },
                 ...(agentGatewayCredentials && gatewaySessionLease
                   ? {
                       buildMcpServers: (initializeResult: Acp.InitializeResponse) =>
@@ -1132,134 +1407,32 @@ export function makePrimeAdapter(
                 Effect.mapError(acpToAdapterError(input.threadId)),
               );
 
+              // prime-agent's acp-mode never sends session/request_permission
+              // or session/elicitation (validatePrimeRuntimeMode fails closed
+              // on that premise), so neither request is surfaced to the user.
+              // Fail-closed responders still answer them: an unregistered
+              // handler would leave a request from a future release buffered
+              // in the runtime's startup registry until the session ends.
               yield* acp.handleRequestPermission((params) =>
                 Effect.gen(function* () {
                   yield* logNative(input.threadId, "session/request_permission", params);
-
-                  const policyOutcome = resolveAcpPermissionPolicy({
-                    runtimeMode: input.runtimeMode,
-                    interactionMode: ctx?.activeInteractionMode,
-                    options: params.options,
+                  yield* Effect.logWarning("prime.acp.unsupported_permission_request", {
+                    threadId: input.threadId,
+                    turnId: ctx?.activeTurnId,
                   });
-                  if (policyOutcome !== undefined) {
-                    return { outcome: policyOutcome };
-                  }
-
-                  const permissionRequest = parsePermissionRequest(params);
-                  const requestId = ApprovalRequestId.makeUnsafe(crypto.randomUUID());
-                  const runtimeRequestId = RuntimeRequestId.makeUnsafe(requestId);
-                  const decision = yield* Deferred.make<ProviderApprovalDecision>();
-                  pendingApprovals.set(requestId, {
-                    decision,
-                    kind: permissionRequest.kind,
-                  });
-
-                  yield* offerRuntimeEvent(
-                    input.lifecycleGeneration,
-                    makeAcpRequestOpenedEvent({
-                      stamp: yield* makeEventStamp(),
-                      provider: PROVIDER,
-                      threadId: input.threadId,
-                      turnId: ctx?.activeTurnId,
-                      requestId: runtimeRequestId,
-                      permissionRequest,
-                      detail: permissionRequest.detail ?? JSON.stringify(params).slice(0, 2000),
-                      args: params,
-                      source: "acp.jsonrpc",
-                      method: "session/request_permission",
-                      rawPayload: params,
-                    }),
-                  );
-
-                  const resolved = yield* Deferred.await(decision);
-                  pendingApprovals.delete(requestId);
-
-                  yield* offerRuntimeEvent(
-                    input.lifecycleGeneration,
-                    makeAcpRequestResolvedEvent({
-                      stamp: yield* makeEventStamp(),
-                      provider: PROVIDER,
-                      threadId: input.threadId,
-                      turnId: ctx?.activeTurnId,
-                      requestId: runtimeRequestId,
-                      permissionRequest,
-                      decision: resolved,
-                    }),
-                  );
-
-                  if (resolved === "cancel") {
-                    return { outcome: { outcome: "cancelled" } as const };
-                  }
-
-                  const selectedOptionId = selectAcpPermissionOptionId(resolved, params.options);
-                  return selectedOptionId === undefined
-                    ? { outcome: { outcome: "cancelled" } as const }
-                    : {
-                        outcome: {
-                          outcome: "selected" as const,
-                          optionId: selectedOptionId,
-                        },
-                      };
+                  return { outcome: { outcome: "cancelled" } as const };
                 }),
               );
 
               yield* acp.handleElicitation((params) =>
                 Effect.gen(function* () {
                   yield* logNative(input.threadId, "session/elicitation", params);
-
-                  if (!isFormElicitationRequest(params)) {
-                    return {
-                      action: "decline",
-                    } satisfies Acp.CreateElicitationResponse;
-                  }
-
-                  const questions = elicitationQuestionsFromRequest(params);
-                  const requestId = ApprovalRequestId.makeUnsafe(crypto.randomUUID());
-                  const runtimeRequestId = RuntimeRequestId.makeUnsafe(requestId);
-                  const answers = yield* Deferred.make<ProviderUserInputAnswers>();
-                  pendingUserInputs.set(requestId, { answers });
-
-                  yield* offerRuntimeEvent(input.lifecycleGeneration, {
-                    type: "user-input.requested",
-                    ...(yield* makeEventStamp()),
-                    provider: PROVIDER,
+                  yield* Effect.logWarning("prime.acp.unsupported_elicitation", {
                     threadId: input.threadId,
                     turnId: ctx?.activeTurnId,
-                    requestId: runtimeRequestId,
-                    payload: { questions },
-                    raw: {
-                      source: "acp.jsonrpc",
-                      method: "session/elicitation",
-                      payload: params,
-                    },
                   });
-
-                  const resolved = yield* Deferred.await(answers);
-                  pendingUserInputs.delete(requestId);
-
-                  yield* offerRuntimeEvent(input.lifecycleGeneration, {
-                    type: "user-input.resolved",
-                    ...(yield* makeEventStamp()),
-                    provider: PROVIDER,
-                    threadId: input.threadId,
-                    turnId: ctx?.activeTurnId,
-                    requestId: runtimeRequestId,
-                    payload: { answers: resolved },
-                    raw: {
-                      source: "acp.jsonrpc",
-                      method: "session/elicitation",
-                      payload: params,
-                    },
-                  });
-
-                  return elicitationResponseFromAnswers(params, resolved);
-                }).pipe(
-                  Effect.catch(() =>
-                    Effect.succeed({
-                      action: "decline",
-                    } as Acp.CreateElicitationResponse),
-                  ),
-                ),
+                  return { action: "decline" } satisfies Acp.CreateElicitationResponse;
+                }),
               );
 
               const started = yield* acp
@@ -1289,11 +1462,11 @@ export function makePrimeAdapter(
               sessionId: resumeSessionId,
               attempt,
               maxAttempts: PRIME_RESUME_START_ATTEMPTS,
-              delayMs: PRIME_RESUME_START_RETRY_DELAY_MS,
+              delayMs: timeouts.resumeStartRetryDelayMs,
               detail: describeCause(outcome.cause),
             });
             yield* Effect.ignore(Scope.close(sessionScope, Exit.void));
-            yield* Effect.sleep(PRIME_RESUME_START_RETRY_DELAY_MS);
+            yield* Effect.sleep(timeouts.resumeStartRetryDelayMs);
             sessionScope = yield* Scope.make("sequential");
           }
           const { acp, started } = runtime;
@@ -1325,8 +1498,6 @@ export function makePrimeAdapter(
             scope: sessionScope,
             acp,
             notificationFiber: undefined,
-            pendingApprovals,
-            pendingUserInputs,
             turns: [],
             activeInteractionMode: undefined,
             activeTurnId: undefined,
@@ -1349,6 +1520,10 @@ export function makePrimeAdapter(
             compactionQuietUntil: undefined,
             compactionCancelFiber: undefined,
             latestSessionCostUsd: undefined,
+            discoveryTarget: resolveDiscoveryTarget(effectivePrimeSettings),
+            sessionUsageTail: undefined,
+            pendingSessionUsageEmit: undefined,
+            pendingSessionUsageHoldFiber: undefined,
             stopped: false,
             gatewaySessionLease,
           };
@@ -1567,6 +1742,11 @@ export function makePrimeAdapter(
               // durable identity a later --resume relaunch reopens.
               payload: { providerThreadId: ctx.primeSessionId ?? started.sessionId },
             });
+            // A resumed session's file is known up front; its catch-up read
+            // reports the thread's current context right after thread.started.
+            if (resumeSessionId !== undefined && resumeFile !== undefined) {
+              yield* bindPrimeSessionFile(ctx, { sessionId: resumeSessionId, file: resumeFile });
+            }
           }).pipe(
             Effect.onExit((exit) =>
               Exit.isSuccess(exit) ? Effect.void : Effect.ignore(stopSessionInternal(ctx)),
@@ -1789,6 +1969,7 @@ export function makePrimeAdapter(
                 if (ctx.activeTurnId !== turnId) return;
                 ctx.activePromptResolved = true;
                 yield* waitForPrimeQueuedTurnEventsDrained(ctx);
+                yield* flushPrimeSessionUsage(ctx);
                 yield* cancelAgentGatewayTurn(ctx.gatewaySessionLease, turnId);
                 if (!settlePrimeActiveTurn(ctx, turnId)) return;
                 const completedCost = finalizeAcpActiveTurnCost(ctx);
@@ -1826,6 +2007,11 @@ export function makePrimeAdapter(
                 // Drain BEFORE snapshotting turn state: queued events may still
                 // set activeTurnFailedToolDetail or assistant-content flags.
                 yield* waitForPrimeQueuedTurnEventsDrained(ctx);
+                // Prime writes the turn's last assistant usage to the session
+                // file before answering the prompt; read it now so the final
+                // snapshot carries this turn id and the cost precedes
+                // finalizeAcpActiveTurnCost below.
+                yield* flushPrimeSessionUsage(ctx);
                 const hadAssistantContent = ctx.activeTurnHadAssistantContent;
                 const failedToolDetail = ctx.activeTurnFailedToolDetail;
                 yield* cancelAgentGatewayTurn(ctx.gatewaySessionLease, turnId);
@@ -1848,13 +2034,17 @@ export function makePrimeAdapter(
                   });
                 }
                 // A fresh start that could not locate Prime's session file
-                // retries now: the file has had a whole turn to appear.
+                // retries now: the file has had a whole turn to appear. The
+                // dir lock keeps the retry from overlapping another fresh
+                // start's snapshot -> spawn -> detect window.
                 const pendingDetection = ctx.sessionDetection;
                 if (pendingDetection !== undefined) {
-                  yield* detectPrimeSessionFile(
-                    ctx,
-                    pendingDetection,
-                    PRIME_SESSION_DETECT_RETRY_TIMEOUT_MS,
+                  yield* sessionsDirLock(pendingDetection.snapshot.sessionsDir).withPermits(1)(
+                    detectPrimeSessionFile(
+                      ctx,
+                      pendingDetection,
+                      PRIME_SESSION_DETECT_RETRY_TIMEOUT_MS,
+                    ),
                   );
                 }
                 const completion = classifyAcpPromptTurnCompletion({
@@ -1919,7 +2109,7 @@ export function makePrimeAdapter(
 
         // Backstop the forked prompt: if the child goes silent, fail the turn
         // instead of leaving it "Working" forever. Self-terminates when the
-        // turn settles; pauses while a human approval is pending.
+        // turn settles (Prime never pauses on a human approval).
         yield* forkAcpAdapterTurnIdleWatchdog({
           context: ctx,
           turnId,
@@ -1957,8 +2147,6 @@ export function makePrimeAdapter(
           ctx.gatewaySessionLease,
           activeTurnId,
           Effect.gen(function* () {
-            yield* settleAcpPendingApprovalsAsCancelled(ctx.pendingApprovals);
-            yield* settleAcpPendingUserInputsAsEmptyAnswers(ctx.pendingUserInputs);
             const activePromptFiber = ctx.activePromptFiber;
             yield* Effect.ignore(
               ctx.acp.cancel.pipe(
@@ -1976,40 +2164,26 @@ export function makePrimeAdapter(
         );
       });
 
-    const respondToRequest: PrimeAdapterShape["respondToRequest"] = (
-      threadId,
-      requestId,
-      decision,
-    ) =>
+    // Prime never opens approval or user-input requests (see the fail-closed
+    // responders in startSession), so there is never a pending request to answer.
+    const respondToRequest: PrimeAdapterShape["respondToRequest"] = (threadId, requestId) =>
       Effect.gen(function* () {
-        const ctx = yield* requireSession(threadId);
-        const pending = ctx.pendingApprovals.get(requestId);
-        if (!pending) {
-          return yield* new ProviderAdapterRequestError({
-            provider: PROVIDER,
-            method: "session/request_permission",
-            detail: `Unknown pending approval request: ${requestId}`,
-          });
-        }
-        yield* Deferred.succeed(pending.decision, decision);
+        yield* requireSession(threadId);
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "session/request_permission",
+          detail: `Unknown pending approval request: ${requestId}`,
+        });
       });
 
-    const respondToUserInput: PrimeAdapterShape["respondToUserInput"] = (
-      threadId,
-      requestId,
-      answers,
-    ) =>
+    const respondToUserInput: PrimeAdapterShape["respondToUserInput"] = (threadId, requestId) =>
       Effect.gen(function* () {
-        const ctx = yield* requireSession(threadId);
-        const pending = ctx.pendingUserInputs.get(requestId);
-        if (!pending) {
-          return yield* new ProviderAdapterRequestError({
-            provider: PROVIDER,
-            method: "session/elicitation",
-            detail: `Unknown pending user-input request: ${requestId}`,
-          });
-        }
-        yield* Deferred.succeed(pending.answers, answers);
+        yield* requireSession(threadId);
+        return yield* new ProviderAdapterRequestError({
+          provider: PROVIDER,
+          method: "session/elicitation",
+          detail: `Unknown pending user-input request: ${requestId}`,
+        });
       });
 
     const readThread: PrimeAdapterShape["readThread"] = (threadId) =>
@@ -2213,10 +2387,13 @@ export function makePrimeAdapter(
         const ctx = yield* withThreadLock(threadId, claimPrimeCompactionSlot(threadId, preLockCtx));
         return yield* runPrimeCompaction(ctx).pipe(
           // compactingThread stays set until this clears it: sendTurn only
-          // rejects while the flag is true.
+          // rejects while the flag is true. The terminal compaction event is
+          // out by now, so usage the tail held back during the compaction can
+          // follow it (the meter reads the reduced context immediately).
           Effect.ensuring(
-            Effect.sync(() => {
+            Effect.suspend(() => {
               ctx.compactingThread = false;
+              return flushPendingPrimeSessionUsage(ctx);
             }),
           ),
         );

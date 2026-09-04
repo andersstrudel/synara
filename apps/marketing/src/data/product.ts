@@ -16,7 +16,7 @@ export const PRODUCT_META_DESCRIPTION =
   "Synara is a free, open-source, local-first workspace for coding agents with separate tasks, Git worktrees, terminals, browser verification, diffs, handoffs, and pull-request delivery.";
 
 export const PRODUCT_DESCRIPTION =
-  "Synara is a free, open-source, local-first workspace and control plane for coding agents. Run Claude Code, Codex, OpenCode, Cursor, Antigravity, Grok Build, Devin CLI, Pi, and Factory Droid across separate tasks with terminals, browser verification, diffs, Git worktrees, handoffs, and pull-request delivery in one desktop app.";
+  "Synara is a free, open-source, local-first workspace and control plane for coding agents. Run Claude Code, Codex, OpenCode, Cursor, Antigravity, Grok Build, Devin CLI, Pi, Factory Droid, and Prime across separate tasks with terminals, browser verification, diffs, Git worktrees, handoffs, and pull-request delivery in one desktop app.";
 
 export const SUPPORTED_PROVIDERS = [
   "Claude Code",
@@ -28,6 +28,7 @@ export const SUPPORTED_PROVIDERS = [
   "Devin CLI",
   "Pi",
   "Factory Droid",
+  "Prime",
 ] as const;
 
 export const PRODUCT_PILLARS = [

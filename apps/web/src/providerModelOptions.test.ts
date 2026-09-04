@@ -126,6 +126,27 @@ describe("mergeDynamicModelOptions", () => {
     ]);
   });
 
+  it("prefers a runtime display name over a hint entry whose name is derived from the slug", () => {
+    // The composer appends a hint entry for the selected model, named by
+    // humanizing the slug; the discovered catalog name must still win.
+    expect(
+      mergeDynamicModelOptions({
+        provider: "prime",
+        staticOptions: [
+          { slug: "cerebras/qwen-3.8-27b", name: "Qwen 3.8 27b", isCustom: true },
+          { slug: "custom/private", name: "My private model", isCustom: true },
+        ],
+        dynamicModels: [
+          { slug: "cerebras/qwen-3.8-27b", name: "Qwen 3.8 27B", upstreamProviderId: "cerebras" },
+          { slug: "custom/private", name: "Private (runtime)" },
+        ],
+      }),
+    ).toEqual([
+      { slug: "cerebras/qwen-3.8-27b", name: "Qwen 3.8 27B", upstreamProviderId: "cerebras" },
+      { slug: "custom/private", name: "My private model" },
+    ]);
+  });
+
   it("preserves runtime descriptions without inventing them for custom models", () => {
     const options = mergeDynamicModelOptions({
       provider: "droid",

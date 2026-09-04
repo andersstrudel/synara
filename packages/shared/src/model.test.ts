@@ -598,6 +598,30 @@ describe("provider option descriptor helpers", () => {
     expect(descriptors.some((descriptor) => descriptor.id === "reasoningEffort")).toBe(false);
   });
 
+  it("maps Prime reasoning controls onto the thinkingLevel option", () => {
+    const descriptors = getProviderOptionDescriptors({
+      provider: "prime",
+      caps: {
+        reasoningEffortLevels: [
+          { value: "off", label: "Off" },
+          { value: "medium", label: "Medium", isDefault: true },
+          { value: "max", label: "Max" },
+        ],
+        supportsFastMode: false,
+        supportsThinkingToggle: false,
+        promptInjectedEffortLevels: [],
+        contextWindowOptions: [],
+      },
+      selections: { thinkingLevel: "max" },
+    });
+
+    expect(descriptors.find((descriptor) => descriptor.id === "thinkingLevel")).toMatchObject({
+      type: "select",
+      currentValue: "max",
+    });
+    expect(descriptors.some((descriptor) => descriptor.id === "reasoningEffort")).toBe(false);
+  });
+
   it("surfaces Devin runtime reasoningEffortLevels and keeps effort/fast controls", () => {
     const descriptors = getProviderOptionDescriptors({
       provider: "devin",

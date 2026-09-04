@@ -503,7 +503,8 @@ const PROVIDER_CUSTOM_MODEL_CONFIG: Record<ProviderKind, ProviderCustomModelConf
     settingsKey: "customPrimeModels",
     defaultSettingsKey: "customPrimeModels",
     title: "Prime",
-    description: "Save additional Prime model slugs for the picker and provider runtime.",
+    description:
+      "Save additional Prime Agent model slugs (provider/model) for the picker and provider runtime.",
     placeholder: "provider/model",
     example: "cerebras/qwen-3.8-27b",
   },

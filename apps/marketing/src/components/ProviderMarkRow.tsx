@@ -8,6 +8,7 @@ import {
   GrokIcon,
   OpencodeIcon,
   PiIcon,
+  PrimeIcon,
 } from "@/components/BrandIcons";
 
 const marks = [
@@ -54,6 +55,12 @@ const marks = [
     Icon: DroidIcon,
     className: "text-[var(--text-primary)]",
     rotation: "rotate-[5deg]",
+  },
+  {
+    name: "Prime",
+    Icon: PrimeIcon,
+    className: "text-[var(--text-primary)]",
+    rotation: "-rotate-[3deg]",
   },
 ] as const;
 

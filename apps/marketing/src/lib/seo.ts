@@ -56,6 +56,7 @@ export const SEO_KEYWORDS = [
   "Devin CLI workspace",
   "Pi coding agent",
   "Factory Droid",
+  "Prime Agent",
   "Git worktrees",
   "agent browser verification",
   "developer tools",

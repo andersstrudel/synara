@@ -108,6 +108,17 @@ script `https://opencode.ai/install`.
 **Primary source:** [Pi docs in earendil-works/pi](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/index.md)
 checked 2026-08-07 (HTTP 200); `https://pi.dev/install.sh` HTTP 200.
 
+## Prime
+
+**Claims:** Prime Agent repository README plus the quickstart, usage, and providers docs under
+`packages/coding-agent/docs`; the `prime-agent` executable; `/login`, `/compact`, and
+`prime-agent update`; the `prime-agent --mode acp` stdio server; install script
+`https://app.primeintellect.ai/prime-agent/install.sh`.
+
+**Primary source:** [Prime Agent repository](https://github.com/PrimeIntellect-ai/prime-agent)
+checked 2026-09-04 (HTTP 200, including the quickstart, usage, and providers pages);
+`https://app.primeintellect.ai/prime-agent/install.sh` HTTP 200.
+
 ## Synara (project self-links)
 
 **Claims:** GitHub issues / new-issue links, releases, main-branch repository, and canary

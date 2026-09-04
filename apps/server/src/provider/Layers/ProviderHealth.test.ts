@@ -2435,7 +2435,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
         assert.strictEqual(status.authType, "prime");
         assert.strictEqual(
           status.authLabel,
-          "prime-agent login · Anthropic, OpenAI, Cerebras, Groq",
+          "prime-agent login · Anthropic, OpenAI Codex, Cerebras, Groq",
         );
         assert.strictEqual(status.version, "0.9.1");
         assert.strictEqual(status.message, undefined);

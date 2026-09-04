@@ -61,14 +61,15 @@ const PROVIDER_CREDENTIAL_GRANTS: Record<ProviderChildKind, "all" | ReadonlySet<
   devin: new Set(["DEVIN_API_KEY", "WINDSURF_API_KEY"]),
   droid: new Set(["FACTORY_API_KEY"]),
   grok: new Set(["XAI_API_KEY", "GROK_CODE_XAI_API_KEY"]),
-  // Prime Agent authenticates from its own credential store (auth.json); no
-  // host credential reaches the child.
-  prime: new Set(),
   // These profiles deliberately support arbitrary upstream model providers.
   acp: "all",
   codex: "all",
   opencode: "all",
   pi: "all",
+  // Prime Agent's model registry resolves upstream API keys from the
+  // environment (ANTHROPIC_API_KEY, OPENAI_API_KEY, ...) alongside its own
+  // auth.json store, exactly like Pi.
+  prime: "all",
 };
 
 const INHERITED_NATIVE_CAPABILITY_KEYS = new Set([

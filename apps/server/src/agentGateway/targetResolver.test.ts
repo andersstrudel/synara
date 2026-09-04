@@ -298,6 +298,13 @@ describe("agent gateway target resolver", () => {
           rejectedValue: "invented",
         },
         {
+          provider: "prime",
+          descriptor: makeEffortDescriptor("prime-model", "low"),
+          optionKey: "thinkingLevel",
+          acceptedValue: "low",
+          rejectedValue: "invented",
+        },
+        {
           provider: "antigravity",
           descriptor: makeEffortDescriptor("antigravity-model", "low"),
           optionKey: "reasoningEffort",

@@ -172,15 +172,24 @@ export function mergeDynamicModelOptions(input: {
       continue;
     }
     dynamicNormalizedSlugs.add(normalizedSlug);
+    const staticName = staticNameBySlug.get(normalizedSlug);
+    // A static name only wins when it carries information of its own. The
+    // selected-model hint and bare custom slugs are named by humanizing the
+    // slug, so a runtime display name ("Qwen 3.8 27B") must beat the derived
+    // fallback ("Qwen 3.8 27b") instead of being shadowed by it.
+    const staticNameIsDerived = staticName !== undefined && staticName === displayNameFallback;
+    const informativeRawName =
+      rawName.length > 0 &&
+      rawName.toLowerCase() !== rawSlug &&
+      rawName.toLowerCase() !== normalizedSlug.toLowerCase()
+        ? rawName
+        : null;
     normalizedDynamicOptions.push({
       slug: normalizedSlug,
       name:
-        staticNameBySlug.get(normalizedSlug) ??
-        (rawName.length > 0 &&
-        rawName.toLowerCase() !== rawSlug &&
-        rawName.toLowerCase() !== normalizedSlug.toLowerCase()
-          ? rawName
-          : displayNameFallback),
+        staticName !== undefined && !staticNameIsDerived
+          ? staticName
+          : (informativeRawName ?? staticName ?? displayNameFallback),
       ...(dynamicModel.description?.trim() ? { description: dynamicModel.description.trim() } : {}),
       ...(dynamicModel.upstreamProviderId?.trim()
         ? { upstreamProviderId: dynamicModel.upstreamProviderId.trim() }

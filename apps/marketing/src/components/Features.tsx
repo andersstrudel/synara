@@ -13,6 +13,7 @@ import {
   GrokIcon,
   OpencodeIcon,
   PiIcon,
+  PrimeIcon,
 } from "@/components/BrandIcons";
 import { SplitShowcase } from "@/components/SplitShowcase";
 import { WorktreeMock } from "@/components/WorktreeMock";
@@ -100,6 +101,14 @@ const activeHarnesses: Harness[] = [
     Icon: DroidIcon,
     accent: "text-[var(--text-primary)]",
     status: "droid CLI",
+  },
+  {
+    name: "Prime",
+    tagline:
+      "Run Prime Agent through ACP with its model registry, thinking levels, skills, and compaction.",
+    Icon: PrimeIcon,
+    accent: "text-[var(--text-primary)]",
+    status: "prime-agent CLI",
   },
 ];
 

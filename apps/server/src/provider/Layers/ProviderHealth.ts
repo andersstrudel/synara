@@ -290,8 +290,11 @@ export const PACKAGE_MANAGED_PROVIDER_UPDATES: Partial<
   prime: {
     provider: PRIME_PROVIDER,
     binaryName: "prime-agent",
-    npmPackageName: "prime-agent",
+    // Prime Agent ships as versioned release tarballs behind its own installer and
+    // `prime-agent update`; there is no npm package to compare against.
+    npmPackageName: null,
     homebrew: null,
+    latestVersionSource: null,
     nativeUpdate: {
       executable: "prime-agent",
       args: () => ["update"],

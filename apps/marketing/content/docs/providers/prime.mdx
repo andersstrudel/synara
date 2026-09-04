@@ -1,0 +1,160 @@
+---
+title: Prime
+description: Install, authenticate, verify, and run the Prime Agent CLI through Synara's ACP integration.
+---
+
+Synara connects to the local Prime Agent CLI through the `prime-agent` executable and its Agent Client Protocol mode, `prime-agent --mode acp`. Prime owns the credential store, model registry, skills, slash commands, and session behavior; Synara supplies the durable task, repository environment, transcript, review surfaces, browser and gateway tools, and Git workflow around the session.
+
+## Install
+
+On macOS or Linux, use Prime's official installer:
+
+```bash
+curl -fsSL https://app.primeintellect.ai/prime-agent/install.sh | sh
+```
+
+Restart the terminal, then verify the installed executable:
+
+```bash
+prime-agent --version
+```
+
+The command prints the installed version, for example `0.9.1`.
+
+## Authenticate
+
+Start Prime Agent in a normal terminal:
+
+```bash
+prime-agent
+```
+
+Then sign in:
+
+```text
+/login
+```
+
+`/login` accepts subscription accounts (Claude Pro or Max, ChatGPT Plus or Pro, GitHub Copilot) and API keys for Anthropic, OpenAI, Cerebras, Groq, OpenRouter, Prime Inference, and other supported providers. Prime saves the result in `~/.prime/agent/auth.json`.
+
+Synara reads that credential store to discover models. It never copies or duplicates the secrets. Do not commit the file or paste keys into a Synara task.
+
+## Verify
+
+From a disposable repository:
+
+```bash
+prime-agent --version
+prime-agent
+```
+
+Confirm that `/login` leaves at least one model available, then ask Prime to summarize the repository without making changes. This verifies the executable, credential store, model registry, and working directory before Synara is involved.
+
+`prime-agent --mode acp` is a JSON-RPC stdio server for ACP-aware hosts. Do not use it as an interactive terminal session.
+
+## Connect to Synara
+
+<Steps>
+<Step>
+
+### Enable Prime
+
+Open provider settings and confirm that Synara detects `prime-agent`. Leave the binary path blank to use the executable on `PATH`.
+
+</Step>
+<Step>
+
+### Confirm credentials
+
+Use the credentials saved by `/login`. Synara reads Prime's credential store rather than duplicating the secret.
+
+</Step>
+<Step>
+
+### Refresh models and thinking levels
+
+The model picker lists every model that Prime's registry unlocks for your credentials, grouped by upstream provider. Confirm that the expected entries and the thinking levels supported by the selected model appear.
+
+</Step>
+<Step>
+
+### Choose a runtime mode
+
+Select Auto or Full access. Prime never requests permissions, so the approval-required runtime mode is not supported and a thread refuses to start in it.
+
+</Step>
+<Step>
+
+### Run a bounded task
+
+Start with a clean test repository and a harmless read-only request before enabling skills or MCP tools that can execute code.
+
+</Step>
+</Steps>
+
+## Capabilities in Synara
+
+Prime sessions can expose:
+
+- Every model that Prime's registry unlocks for your credentials, grouped by upstream provider
+- A thinking-level picker (off, minimal, low, medium, high, xhigh, max) limited to what the selected model supports
+- Resumed threads that reuse Prime's own session ids
+- Context compaction through Prime's native `/compact`
+- A live context-window meter in the composer, fed by Prime's own per-call token usage, that resets on compaction and refills as the conversation continues
+- Prime skills (`/skill:<name>`) and slash commands
+- Synara's browser and Agent Gateway MCP tools passed into the session
+- Tool calls, command output, file changes, and assistant text
+- Synara's terminal, browser, diff, checkpoint, worktree, and Git delivery surfaces
+
+Plan mode is emulated with a prompt prefix rather than a native Prime mode. Review the proposal before switching back to normal execution.
+
+Synara does not classify Prime as supporting native live-turn steering. Queue a follow-up for the next turn, or use Stop and start again.
+
+## Configuration
+
+Synara exposes two Prime settings:
+
+- **Binary path:** leave blank to use `prime-agent` from `PATH`, or point it at a specific executable rather than a directory.
+- **Agent directory:** optional. Defaults to `~/.prime/agent` and maps to `PRIME_AGENT_CODING_AGENT_DIR`, so credentials, models, skills, and commands are read from that location.
+
+Keep other configuration in the locations supported by the installed CLI. When behavior differs between Prime and Synara, compare the exact executable, version, working directory, agent directory, model, and thinking level.
+
+## Updating
+
+Use Prime's supported update command:
+
+```bash
+prime-agent update
+```
+
+Restart Synara after updating, especially when the model registry, ACP mode, or command set changed.
+
+## Troubleshooting
+
+### Prime is not detected
+
+1. Run `prime-agent --version` from a fresh terminal.
+2. Confirm the installer directory is on `PATH`.
+3. Check Synara's custom binary path.
+4. Restart Synara after installation or environment changes.
+
+### No models are available
+
+Run `prime-agent` directly and use `/login`. Confirm that Prime lists at least one model for the account or API key, then refresh the provider in Synara.
+
+### A thread refuses to start in approval mode
+
+This is expected: Prime never requests permissions, so Synara does not support its approval-required runtime mode. Switch the runtime mode to Auto or Full access and start the thread again.
+
+### A follow-up cannot steer the running turn
+
+Synara does not advertise native live-turn steering for Prime. Queue the message for the next turn or interrupt deliberately after reviewing any work already performed.
+
+## Official documentation
+
+- [Prime Agent repository](https://github.com/PrimeIntellect-ai/prime-agent)
+- [Prime Agent quickstart](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/quickstart.md)
+- [Prime Agent usage](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/usage.md)
+- [Prime Agent providers](https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/providers.md)
+
+Continue with [Your first task](/docs/getting-started/first-task) or [Provider handoffs](/docs/workflows/handoffs).

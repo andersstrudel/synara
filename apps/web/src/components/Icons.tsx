@@ -297,11 +297,12 @@ export const PiIcon: Icon = (props) => (
 // Prime Intellect butterfly mark (MIT, from the prime-agent repository). The paths span the
 // full 178 width but only ~115 of the height, so inside the app's square `size-*` icon boxes
 // the mark would sit at two-thirds the height of its square neighbours. The viewBox is inset
-// by 1.25x around the centre and overflow stays visible, which lets the wings extend ~12%
-// past the box on each side while the mark's optical centre stays put.
+// by 1.15x around the centre and overflow stays visible, which lets the wings extend ~7%
+// past the box on each side while the mark's optical centre stays put. (1.25x matched the
+// neighbours' height but overhung the slot width and crowded the label.)
 // A light stroke keeps the wing-tips legible at the 14–16px sizes the picker and settings
 // rows use.
-const PRIME_ICON_VIEW_BOX = "17.8 17.8 142.4 142.4";
+const PRIME_ICON_VIEW_BOX = "11.6 11.6 154.8 154.8";
 
 export const PrimeIcon: Icon = (props) => (
   <svg

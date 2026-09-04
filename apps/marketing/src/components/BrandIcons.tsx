@@ -122,13 +122,13 @@ export function DroidIcon({ className }: IconProps) {
 }
 
 // Prime Intellect butterfly mark (MIT, from the prime-agent repository). The paths span the
-// full 178 width but only ~115 of the height, so the viewBox is inset by 1.25x around the
+// full 178 width but only ~115 of the height, so the viewBox is inset by 1.15x around the
 // centre with overflow visible; the wings extend slightly past a square icon box while the
 // mark reads at the same height as its square neighbours.
 export function PrimeIcon({ className }: IconProps) {
   return (
     <svg
-      viewBox="17.8 17.8 142.4 142.4"
+      viewBox="11.6 11.6 154.8 154.8"
       overflow="visible"
       fill="none"
       className={className}

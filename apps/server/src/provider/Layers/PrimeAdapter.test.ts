@@ -1812,7 +1812,8 @@ function primeSpawnArgs(agent: PrimeMockAgent, model: string): ReadonlyArray<str
 
 describe("Prime fast mode through the adapter", () => {
   // One model Prime lets into the priority tier and one it clamps back to
-  // default (its supportsFastMode rule), both served by openai-codex.
+  // default (its supportsFastMode rule: gpt-5.4/5.5/5.6* and GPT-6), both
+  // served by openai-codex.
   const registryData = {
     models: [
       {
@@ -1825,8 +1826,8 @@ describe("Prime fast mode through the adapter", () => {
         contextWindow: 272_000,
       },
       {
-        id: "gpt-6-astra",
-        name: "GPT-6 Astra",
+        id: "gpt-5.3-codex",
+        name: "GPT-5.3 Codex",
         api: "openai-codex-responses",
         provider: "openai-codex",
         reasoning: true,
@@ -2009,14 +2010,14 @@ describe("Prime fast mode through the adapter", () => {
           cwd: agent.cwd,
           modelSelection: {
             provider: "prime",
-            model: "openai-codex/gpt-6-astra",
+            model: "openai-codex/gpt-5.3-codex",
             options: { fastMode: true },
           },
         });
 
         const sessionId = readSoleSessionId(agent);
         expect(session.resumeCursor).toEqual(buildPrimeResumeCursor(sessionId));
-        expect(agent.readArgs()).toEqual([baseArgs(agent, "openai-codex/gpt-6-astra")]);
+        expect(agent.readArgs()).toEqual([baseArgs(agent, "openai-codex/gpt-5.3-codex")]);
         expect(readSoleSessionEntries(agent).map((entry) => entry.type)).toEqual(["session"]);
 
         yield* adapter.stopSession(threadId);

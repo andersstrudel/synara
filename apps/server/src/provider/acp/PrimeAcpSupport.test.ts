@@ -556,13 +556,14 @@ function codexRegistryModel(id: string) {
 }
 
 describe("Prime fast mode", () => {
-  it("mirrors prime-agent 0.9.1 supportsFastMode", () => {
+  it("mirrors prime-agent supportsFastMode, GPT-6 included", () => {
     const codex = codexRegistryModel;
     expect(primeModelSupportsFastMode(codex("gpt-5.4"))).toBe(true);
     expect(primeModelSupportsFastMode(codex("gpt-5.5"))).toBe(true);
     expect(primeModelSupportsFastMode(codex("gpt-5.6"))).toBe(true);
     expect(primeModelSupportsFastMode(codex("gpt-5.6-sol"))).toBe(true);
-    expect(primeModelSupportsFastMode(codex("gpt-6-astra"))).toBe(false);
+    expect(primeModelSupportsFastMode(codex("gpt-6-astra"))).toBe(true);
+    expect(primeModelSupportsFastMode(codex("gpt-5.3-codex"))).toBe(false);
     expect(primeModelSupportsFastMode(codex("gpt-5.6.1"))).toBe(false);
     expect(primeModelSupportsFastMode(codex("o5"))).toBe(false);
     // The API-key OpenAI provider qualifies over the Responses API only.

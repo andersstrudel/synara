@@ -520,21 +520,24 @@ export const PRIME_SERVICE_TIER_FAST = "priority";
 export type PrimeServiceTier = typeof PRIME_SERVICE_TIER_DEFAULT | typeof PRIME_SERVICE_TIER_FAST;
 
 const PRIME_FAST_MODE_MODEL_IDS: ReadonlySet<string> = new Set(["gpt-5.4", "gpt-5.5", "gpt-5.6"]);
-const PRIME_FAST_MODE_MODEL_ID_PREFIX = "gpt-5.6-";
+const PRIME_FAST_MODE_MODEL_ID_PREFIXES: ReadonlyArray<string> = ["gpt-5.6-", "gpt-6"];
 
 /**
- * Mirrors prime-agent 0.9.1 `supportsFastMode` (dist/bundle/chunk-I5EJ3O5R.js):
- * the `priority` tier is available to gpt-5.4, gpt-5.5, gpt-5.6 and gpt-5.6-*
- * when served by the `openai-codex` provider over `openai-codex-responses` or
- * by the `openai` provider over `openai-responses`. Prime clamps every other
- * model back to `default` at session creation, so Synara offers the toggle
- * (and rewrites the session tier) only where it can take effect.
+ * Mirrors prime-agent's `supportsFastMode` (dist/bundle/chunk-I5EJ3O5R.js):
+ * the `priority` tier is available to gpt-5.4, gpt-5.5, gpt-5.6, gpt-5.6-* and
+ * the GPT-6 family when served by the `openai-codex` provider over
+ * `openai-codex-responses` or by the `openai` provider over `openai-responses`.
+ * Prime clamps every other model back to `default` at session creation, so
+ * Synara offers the toggle (and rewrites the session tier) only where it can
+ * take effect. prime-agent 0.9.1 ships the rule without the GPT-6 prefix;
+ * ~/.prime-synara/patch-prime-fast-mode.sh widens it until Prime does.
  */
 export function primeModelSupportsFastMode(
   model: Pick<PrimeRegistryModel, "id" | "provider" | "api">,
 ): boolean {
   const eligibleId =
-    PRIME_FAST_MODE_MODEL_IDS.has(model.id) || model.id.startsWith(PRIME_FAST_MODE_MODEL_ID_PREFIX);
+    PRIME_FAST_MODE_MODEL_IDS.has(model.id) ||
+    PRIME_FAST_MODE_MODEL_ID_PREFIXES.some((prefix) => model.id.startsWith(prefix));
   return (
     eligibleId &&
     ((model.provider === "openai-codex" && model.api === "openai-codex-responses") ||

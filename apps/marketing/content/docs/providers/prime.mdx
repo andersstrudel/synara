@@ -98,7 +98,7 @@ Prime sessions can expose:
 
 - Every model that Prime's registry unlocks for your credentials, grouped by upstream provider
 - A thinking-level picker (off, minimal, low, medium, high, xhigh, max) limited to what the selected model supports
-- A Fast mode toggle in the picker's Effort header for the GPT-5.4, GPT-5.5, and GPT-5.6 models reached through ChatGPT Codex, applied through Prime Agent's own service tier. Other models, including GPT-6 Astra on prime-agent 0.9.1, do not expose it because Prime clamps them to the default tier
+- A Fast mode toggle in the picker's Effort header for the GPT-5.4, GPT-5.5, GPT-5.6, and GPT-6 models reached through ChatGPT Codex, applied through Prime Agent's own service tier. Prime decides which models may use that tier (its `supportsFastMode` rule); models it clamps to the default tier do not show the toggle.
 - Resumed threads that reuse Prime's own session ids
 - Context compaction through Prime's native `/compact`
 - A live context-window meter in the composer, fed by Prime's own per-call token usage, that resets on compaction and refills as the conversation continues

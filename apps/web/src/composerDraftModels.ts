@@ -15,6 +15,7 @@ import {
   type ModelSelection,
   type ModelSlug,
   type PiThinkingLevel,
+  type PrimeModelOptions,
   type PrimeThinkingLevel,
   type ProviderModelOptions,
 } from "@synara/contracts";
@@ -395,8 +396,14 @@ export function normalizeProviderModelOptions(
   )
     ? primeCandidate.thinkingLevel
     : undefined;
-  const prime =
-    primeThinkingLevel !== undefined ? { thinkingLevel: primeThinkingLevel } : undefined;
+  const primeFastMode = booleanOrUndefined(primeCandidate?.fastMode);
+  const prime: PrimeModelOptions | undefined =
+    primeThinkingLevel !== undefined || primeFastMode !== undefined
+      ? {
+          ...(primeThinkingLevel !== undefined ? { thinkingLevel: primeThinkingLevel } : {}),
+          ...(primeFastMode !== undefined ? { fastMode: primeFastMode } : {}),
+        }
+      : undefined;
   const devinFastMode = booleanOrUndefined(devinCandidate?.fastMode);
   const devinReasoningEffort = trimStringOrUndefined(devinCandidate?.reasoningEffort);
   const devinThinking = booleanOrUndefined(devinCandidate?.thinking);

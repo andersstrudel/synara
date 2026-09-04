@@ -28,9 +28,14 @@ import {
   orderPrimeModelSlugs,
   parsePrimeCommands,
   parsePrimeModelRegistry,
+  parsePrimeRegistryModels,
   parsePrimeRpcResponses,
   parsePrimeSessionHeader,
   parsePrimeUserSettings,
+  PRIME_SERVICE_TIER_DEFAULT,
+  PRIME_SERVICE_TIER_FAST,
+  primeModelSupportsFastMode,
+  primeServiceTierFor,
   readPrimeAuthProviders,
   readPrimeUserSettings,
   resolvePrimeAcpAuthMethodId,
@@ -542,6 +547,83 @@ describe("parsePrimeModelRegistry", () => {
     expect(formatPrimeContextWindow(272_000)).toBe("272K");
     expect(formatPrimeContextWindow(1_000_000)).toBe("1M");
     expect(formatPrimeContextWindow(1_500_000)).toBe("1.5M");
+  });
+});
+
+// A model as Prime's registry lists it under the Codex subscription provider.
+function codexRegistryModel(id: string) {
+  return { id, provider: "openai-codex", api: "openai-codex-responses" };
+}
+
+describe("Prime fast mode", () => {
+  it("mirrors prime-agent 0.9.1 supportsFastMode", () => {
+    const codex = codexRegistryModel;
+    expect(primeModelSupportsFastMode(codex("gpt-5.4"))).toBe(true);
+    expect(primeModelSupportsFastMode(codex("gpt-5.5"))).toBe(true);
+    expect(primeModelSupportsFastMode(codex("gpt-5.6"))).toBe(true);
+    expect(primeModelSupportsFastMode(codex("gpt-5.6-sol"))).toBe(true);
+    expect(primeModelSupportsFastMode(codex("gpt-6-astra"))).toBe(false);
+    expect(primeModelSupportsFastMode(codex("gpt-5.6.1"))).toBe(false);
+    expect(primeModelSupportsFastMode(codex("o5"))).toBe(false);
+    // The API-key OpenAI provider qualifies over the Responses API only.
+    expect(
+      primeModelSupportsFastMode({ id: "gpt-5.6", provider: "openai", api: "openai-responses" }),
+    ).toBe(true);
+    expect(
+      primeModelSupportsFastMode({ id: "gpt-5.6", provider: "openai", api: "openai-completions" }),
+    ).toBe(false);
+    // Provider and API must pair the way Prime's registry pairs them.
+    expect(
+      primeModelSupportsFastMode({
+        id: "gpt-5.6",
+        provider: "openai-codex",
+        api: "openai-responses",
+      }),
+    ).toBe(false);
+    expect(primeModelSupportsFastMode({ id: "gpt-5.6-sol", provider: "openai-codex" })).toBe(false);
+    expect(
+      primeModelSupportsFastMode({
+        id: "qwen-3.8-27b",
+        provider: "cerebras",
+        api: "openai-completions",
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps the registry api and advertises supportsFastMode only on eligible models", () => {
+    const registry = parsePrimeRegistryModels(PRIME_RPC_MODELS_DATA);
+    expect(registry.find((model) => model.id === "gpt-5.6-sol")?.api).toBe(
+      "openai-codex-responses",
+    );
+    expect(registry.find((model) => model.id === "claude-fable-5-1")?.api).toBe(
+      "anthropic-messages",
+    );
+    expect(
+      parsePrimeRegistryModels({ models: [{ id: "x", provider: "p" }] })[0]?.api,
+    ).toBeUndefined();
+
+    const models = parsePrimeModelRegistry({
+      models: PRIME_RPC_MODELS_DATA,
+      state: PRIME_RPC_STATE_DATA,
+    });
+    expect(
+      models.find((model) => model.slug === "openai-codex/gpt-5.6-sol")?.supportsFastMode,
+    ).toBe(true);
+    expect(
+      models.find((model) => model.slug === "cerebras/qwen-3.8-27b")?.supportsFastMode,
+    ).toBeUndefined();
+    expect(
+      models.find((model) => model.slug === "anthropic/claude-fable-5-1")?.supportsFastMode,
+    ).toBeUndefined();
+  });
+
+  it("maps the fastMode option onto Prime's service tiers", () => {
+    expect(primeServiceTierFor(undefined)).toBe(PRIME_SERVICE_TIER_DEFAULT);
+    expect(primeServiceTierFor({})).toBe("default");
+    expect(primeServiceTierFor({ fastMode: false })).toBe("default");
+    expect(primeServiceTierFor({ fastMode: true, thinkingLevel: "high" })).toBe(
+      PRIME_SERVICE_TIER_FAST,
+    );
   });
 });
 

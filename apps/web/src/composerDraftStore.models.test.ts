@@ -219,6 +219,21 @@ describe("composerDraftStore modelSelection", () => {
     ).toEqual(modelSelection("devin", "adaptive", { fastMode: true }));
   });
 
+  it("preserves Prime fast mode next to the thinking level in the draft", () => {
+    const store = useComposerDraftStore.getState();
+
+    store.setProviderModelOptions(
+      threadId,
+      "prime",
+      { thinkingLevel: "high", fastMode: true },
+      { model: "openai/gpt-5.5" },
+    );
+
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelSelectionByProvider.prime,
+    ).toEqual(modelSelection("prime", "openai/gpt-5.5", { thinkingLevel: "high", fastMode: true }));
+  });
+
   it("keeps default-only model selections on the draft", () => {
     const store = useComposerDraftStore.getState();
     store.setModelSelection(threadId, modelSelection("codex", "gpt-5.4"));

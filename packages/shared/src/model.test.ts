@@ -14,6 +14,7 @@ import {
   GROK_4_5_REASONING_EFFORTS,
   GROK_4_6_REASONING_EFFORTS,
   GROK_BUILD_REASONING_EFFORTS,
+  type ModelCapabilities,
 } from "@synara/contracts";
 
 import {
@@ -35,6 +36,7 @@ import {
   normalizeGrokModelOptions,
   normalizeModelSlug,
   normalizePiModelOptions,
+  normalizePrimeModelOptions,
   parseCursorCliReasoningEffort,
   resolveApiModelId,
   resolveDevinModelVariant,
@@ -622,6 +624,52 @@ describe("provider option descriptor helpers", () => {
     expect(descriptors.some((descriptor) => descriptor.id === "reasoningEffort")).toBe(false);
   });
 
+  it("projects Prime fast mode into a boolean descriptor seeded from the selected options", () => {
+    const caps: ModelCapabilities = {
+      reasoningEffortLevels: [
+        { value: "medium", label: "Medium", isDefault: true },
+        { value: "high", label: "High" },
+      ],
+      supportsFastMode: true,
+      supportsThinkingToggle: false,
+      promptInjectedEffortLevels: [],
+      contextWindowOptions: [],
+    };
+
+    const enabled = getProviderOptionDescriptors({
+      provider: "prime",
+      caps,
+      selections: { thinkingLevel: "high", fastMode: true },
+    });
+    expect(enabled.find((descriptor) => descriptor.id === "fastMode")).toMatchObject({
+      type: "boolean",
+      label: "Fast Mode",
+      currentValue: true,
+    });
+    expect(enabled.find((descriptor) => descriptor.id === "thinkingLevel")).toMatchObject({
+      type: "select",
+      currentValue: "high",
+    });
+
+    const untouched = getProviderOptionDescriptors({
+      provider: "prime",
+      caps,
+      selections: { thinkingLevel: "high" },
+    });
+    expect(untouched.find((descriptor) => descriptor.id === "fastMode")).toEqual({
+      id: "fastMode",
+      label: "Fast Mode",
+      type: "boolean",
+    });
+
+    const unsupported = getProviderOptionDescriptors({
+      provider: "prime",
+      caps: { ...caps, supportsFastMode: false },
+      selections: { thinkingLevel: "high", fastMode: true },
+    });
+    expect(unsupported.some((descriptor) => descriptor.id === "fastMode")).toBe(false);
+  });
+
   it("surfaces Devin runtime reasoningEffortLevels and keeps effort/fast controls", () => {
     const descriptors = getProviderOptionDescriptors({
       provider: "devin",
@@ -1107,6 +1155,51 @@ describe("normalizePiModelOptions", () => {
     expect(normalizePiModelOptions({ thinkingLevel: "max" })).toEqual({ thinkingLevel: "max" });
     expect(normalizePiModelOptions({ thinkingLevel: "ultra" as never })).toBeUndefined();
     expect(normalizePiModelOptions({})).toBeUndefined();
+  });
+});
+
+describe("normalizePrimeModelOptions", () => {
+  it("keeps supported Prime thinking levels including max", () => {
+    expect(normalizePrimeModelOptions({ thinkingLevel: "high" })).toEqual({
+      thinkingLevel: "high",
+    });
+    expect(normalizePrimeModelOptions({ thinkingLevel: "max" })).toEqual({ thinkingLevel: "max" });
+    expect(normalizePrimeModelOptions({ thinkingLevel: "ultra" as never })).toBeUndefined();
+    expect(normalizePrimeModelOptions({})).toBeUndefined();
+    expect(normalizePrimeModelOptions(null)).toBeUndefined();
+  });
+
+  it("keeps fast mode only when it is on", () => {
+    expect(normalizePrimeModelOptions({ thinkingLevel: "high", fastMode: true })).toEqual({
+      thinkingLevel: "high",
+      fastMode: true,
+    });
+    expect(normalizePrimeModelOptions({ fastMode: true })).toEqual({ fastMode: true });
+    expect(normalizePrimeModelOptions({ thinkingLevel: "high", fastMode: false })).toEqual({
+      thinkingLevel: "high",
+    });
+    expect(normalizePrimeModelOptions({ fastMode: false })).toBeUndefined();
+    expect(normalizePrimeModelOptions({ thinkingLevel: "ultra" as never, fastMode: true })).toEqual(
+      { fastMode: true },
+    );
+  });
+
+  it("gates fast mode on the runtime capability when one is supplied", () => {
+    expect(
+      normalizePrimeModelOptions(
+        { thinkingLevel: "high", fastMode: true },
+        { supportsFastMode: true },
+      ),
+    ).toEqual({ thinkingLevel: "high", fastMode: true });
+    expect(
+      normalizePrimeModelOptions(
+        { thinkingLevel: "high", fastMode: true },
+        { supportsFastMode: false },
+      ),
+    ).toEqual({ thinkingLevel: "high" });
+    expect(normalizePrimeModelOptions({ fastMode: true }, { supportsFastMode: false })).toBe(
+      undefined,
+    );
   });
 });
 

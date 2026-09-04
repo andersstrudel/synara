@@ -215,7 +215,15 @@ const PROVIDER_TARGET_OPTION_RULES = {
   }),
   prime: defineProviderOptionConfig<"prime">({
     primaryOptionKey: "thinkingLevel",
-    options: { thinkingLevel: providerOptionRule("string", PRIME_THINKING_LEVEL_OPTIONS) },
+    options: {
+      thinkingLevel: providerOptionRule("string", PRIME_THINKING_LEVEL_OPTIONS),
+      // Prime's `priority` service tier; discovery advertises supportsFastMode
+      // only for the models Prime lets out of the default tier.
+      fastMode: providerOptionRule("boolean", [], "model-discovery", {
+        advertised: false,
+        validation: { kind: "boolean-capability", capability: "supportsFastMode" },
+      }),
+    },
   }),
   antigravity: defineProviderOptionConfig<"antigravity">({
     primaryOptionKey: "reasoningEffort",

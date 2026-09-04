@@ -22,6 +22,7 @@ import {
   normalizeCursorModelOptions,
   normalizeOpenCodeModelOptions,
   normalizePiModelOptions,
+  normalizePrimeModelOptions,
   resolveDevinModelVariant,
   resolveLabeledOptionValue,
   trimOrNull,
@@ -217,8 +218,9 @@ function getProviderStateFromCapabilities(
     case "prime": {
       const providerOptions = modelOptions?.prime;
       rawEffort = trimOrNull(providerOptions?.thinkingLevel);
-      // Prime shares Pi's thinking-level ladder, so the Pi normalizer applies verbatim.
-      normalizedOptions = normalizePiModelOptions(providerOptions);
+      // Prime shares Pi's thinking-level ladder but adds a fast-mode flag that
+      // only dispatches when the runtime descriptor advertises support.
+      normalizedOptions = normalizePrimeModelOptions(providerOptions, caps);
       break;
     }
     case "devin": {

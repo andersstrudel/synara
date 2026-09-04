@@ -16,6 +16,7 @@ import * as nodePath from "node:path";
 
 import {
   PRIME_THINKING_LEVEL_OPTIONS,
+  type PrimeModelOptions,
   type PrimeThinkingLevel,
   type ProviderListCommandsResult,
   type ProviderListSkillsResult,
@@ -380,6 +381,8 @@ export interface PrimeRegistryModel {
   readonly id: string;
   readonly name: string;
   readonly provider: string;
+  /** Prime's wire API for the model (`anthropic-messages`, `openai-codex-responses`, ...). */
+  readonly api?: string;
   readonly reasoning: boolean;
   readonly thinkingLevelMap?: Readonly<Record<string, string | null>>;
   readonly input: ReadonlyArray<string>;
@@ -407,6 +410,7 @@ export function parsePrimeRegistryModel(value: unknown): PrimeRegistryModel | un
   if (!id || !provider) {
     return undefined;
   }
+  const api = trimToUndefined(value.api);
   const thinkingLevelMap = isRecord(value.thinkingLevelMap)
     ? Object.fromEntries(
         Object.entries(value.thinkingLevelMap).flatMap(([level, mapped]) =>
@@ -427,6 +431,7 @@ export function parsePrimeRegistryModel(value: unknown): PrimeRegistryModel | un
     id,
     name: trimToUndefined(value.name) ?? id,
     provider,
+    ...(api ? { api } : {}),
     reasoning: value.reasoning === true,
     ...(thinkingLevelMap ? { thinkingLevelMap } : {}),
     input,
@@ -507,6 +512,41 @@ export function primeModelSlug(model: Pick<PrimeRegistryModel, "provider" | "id"
   return `${model.provider}/${model.id}`;
 }
 
+// ── Service tier (fast mode) ───────────────────────────────────────
+
+/** Prime's service tiers; `priority` is what its `/fast` command switches to. */
+export const PRIME_SERVICE_TIER_DEFAULT = "default";
+export const PRIME_SERVICE_TIER_FAST = "priority";
+export type PrimeServiceTier = typeof PRIME_SERVICE_TIER_DEFAULT | typeof PRIME_SERVICE_TIER_FAST;
+
+const PRIME_FAST_MODE_MODEL_IDS: ReadonlySet<string> = new Set(["gpt-5.4", "gpt-5.5", "gpt-5.6"]);
+const PRIME_FAST_MODE_MODEL_ID_PREFIX = "gpt-5.6-";
+
+/**
+ * Mirrors prime-agent 0.9.1 `supportsFastMode` (dist/bundle/chunk-I5EJ3O5R.js):
+ * the `priority` tier is available to gpt-5.4, gpt-5.5, gpt-5.6 and gpt-5.6-*
+ * when served by the `openai-codex` provider over `openai-codex-responses` or
+ * by the `openai` provider over `openai-responses`. Prime clamps every other
+ * model back to `default` at session creation, so Synara offers the toggle
+ * (and rewrites the session tier) only where it can take effect.
+ */
+export function primeModelSupportsFastMode(
+  model: Pick<PrimeRegistryModel, "id" | "provider" | "api">,
+): boolean {
+  const eligibleId =
+    PRIME_FAST_MODE_MODEL_IDS.has(model.id) || model.id.startsWith(PRIME_FAST_MODE_MODEL_ID_PREFIX);
+  return (
+    eligibleId &&
+    ((model.provider === "openai-codex" && model.api === "openai-codex-responses") ||
+      (model.provider === "openai" && model.api === "openai-responses"))
+  );
+}
+
+/** The tier a thread's Prime options ask for; an absent or false `fastMode` is `default`. */
+export function primeServiceTierFor(options: PrimeModelOptions | undefined): PrimeServiceTier {
+  return options?.fastMode === true ? PRIME_SERVICE_TIER_FAST : PRIME_SERVICE_TIER_DEFAULT;
+}
+
 // A level is valid unless the model maps it to null; models without a map
 // accept every level. Non-reasoning models have none.
 export function getPrimeSupportedThinkingLevels(
@@ -552,6 +592,7 @@ export function toPrimeProviderModelDescriptor(
     upstreamProviderId: model.provider,
     upstreamProviderName: formatPrimeUpstreamProviderName(model.provider),
     ...(model.contextWindow !== undefined ? { contextWindowTokens: model.contextWindow } : {}),
+    ...(primeModelSupportsFastMode(model) ? { supportsFastMode: true } : {}),
     ...(supportedDescriptors.length > 0
       ? {
           supportedReasoningEfforts: supportedDescriptors.map((descriptor) => ({

@@ -35,6 +35,34 @@ describe("Antigravity model options", () => {
   });
 });
 
+describe("Prime model options", () => {
+  it("keeps a fast mode patch alongside the selected thinking level", () => {
+    const options = buildNextProviderOptions(
+      "prime",
+      { thinkingLevel: "high" },
+      { fastMode: true },
+    );
+
+    expect(options).toEqual({ thinkingLevel: "high", fastMode: true });
+    expect(buildModelSelection("prime", "openai/gpt-5.5", options)).toEqual({
+      provider: "prime",
+      model: "openai/gpt-5.5",
+      options: { thinkingLevel: "high", fastMode: true },
+    });
+    expect(buildProviderOptionPatch("prime", "fastMode", true)).toEqual({ fastMode: true });
+  });
+
+  it("flips fast mode off without losing the thinking level", () => {
+    expect(
+      buildNextProviderOptions(
+        "prime",
+        { thinkingLevel: "high", fastMode: true },
+        { fastMode: false },
+      ),
+    ).toEqual({ thinkingLevel: "high", fastMode: false });
+  });
+});
+
 describe("Claude model selections", () => {
   it("preserves the discovered Auto capability with the selected model", () => {
     expect(buildModelSelection("claudeAgent", "claude-haiku-4-5", undefined, false)).toEqual({

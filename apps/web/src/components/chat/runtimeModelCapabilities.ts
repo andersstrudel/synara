@@ -81,11 +81,15 @@ export function getRuntimeAwareModelCapabilities(input: {
 }): ModelCapabilities {
   const staticCapabilities = getModelCapabilities(input.provider, input.model);
   // Runtime discovery is authoritative when available; the static table is only a startup fallback.
+  // Prime has no static catalog at all, so its fast toggle exists only when the runtime
+  // descriptor says so (Prime clamps every other model to its default service tier).
   const supportsFastMode =
-    (input.provider === "codex" || input.provider === "cursor" || input.provider === "devin") &&
-    input.runtimeModel
-      ? input.runtimeModel.supportsFastMode === true
-      : staticCapabilities.supportsFastMode;
+    input.provider === "prime"
+      ? input.runtimeModel?.supportsFastMode === true
+      : (input.provider === "codex" || input.provider === "cursor" || input.provider === "devin") &&
+          input.runtimeModel
+        ? input.runtimeModel.supportsFastMode === true
+        : staticCapabilities.supportsFastMode;
   const supportsThinkingToggle =
     input.runtimeModel?.supportsThinkingToggle ?? staticCapabilities.supportsThinkingToggle;
   const contextWindowOptions =

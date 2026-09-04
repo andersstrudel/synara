@@ -11,6 +11,12 @@
  * `PrimeSessionUsageTail`): Prime's ACP mode never sends `usage_update`, but
  * the file records exact usage for every LLM call.
  *
+ * Fast mode is Prime's `priority` service tier. ACP mode cannot set it per
+ * request, so the adapter seeds it through the session file the way Prime's
+ * own `/fast` would (see `PrimeSessionServiceTier`) and relaunches with
+ * `--resume`; a fresh start that wants the tier restarts once into the resume
+ * path as soon as its session file is known.
+ *
  * @module PrimeAdapterLive
  */
 import {
@@ -125,8 +131,15 @@ import {
   PRIME_RPC_COMMANDS_REQUEST_ID,
   PRIME_RPC_MODELS_REQUEST_ID,
   PRIME_RPC_STATE_REQUEST_ID,
+  PRIME_SERVICE_TIER_DEFAULT,
   type PrimeAcpRuntimeSettings,
+  type PrimeDetectedSession,
+  primeModelSlug,
+  primeModelSupportsFastMode,
+  type PrimeRegistryModel,
   type PrimeRpcDiscoveryResult,
+  type PrimeServiceTier,
+  primeServiceTierFor,
   type PrimeSessionFileSnapshot,
   readPrimeUserSettings,
   resolvePrimeAgentDir,
@@ -141,6 +154,10 @@ import {
   type AcpSessionRuntimeShape,
   type AcpSessionRuntimeStartResult,
 } from "../acp/AcpSessionRuntime.ts";
+import {
+  appendPrimeServiceTierChange,
+  readPrimeSessionServiceTier,
+} from "../acp/PrimeSessionServiceTier.ts";
 import {
   describePrimeSessionEntry,
   type PrimeSessionModel,
@@ -216,9 +233,10 @@ const PRIME_SESSION_USAGE_IDLE_POLL_MS = 2_000;
 // before it, so usage observed during that window is held until the terminal
 // compaction event is out, bounded by this delay.
 const PRIME_SESSION_USAGE_COMPACTION_HOLD_MS = 1_000;
-// A failed registry probe for a model's context window is not retried on
-// every usage line; the dial keeps working without maxTokens meanwhile.
-const PRIME_CONTEXT_WINDOW_DISCOVERY_RETRY_MS = 60_000;
+// A failed registry probe (a usage line's context window, fast-mode
+// eligibility at start) is not retried on every lookup; the dial keeps
+// working without maxTokens meanwhile.
+const PRIME_REGISTRY_DISCOVERY_RETRY_MS = 60_000;
 const PRIME_SESSION_FILE_USAGE_SOURCE = "prime.session-file.entry";
 const PRIME_SESSION_FILE_USAGE_METHOD = "session/file";
 
@@ -670,14 +688,15 @@ export function makePrimeAdapter(
       { readonly expiresAt: number; readonly descriptors: ReadonlyArray<PrimeCommandDescriptor> }
     >();
     const discoveryLock = yield* Semaphore.make(1);
-    // `provider/model` -> contextWindow per discovery target, filled from the
-    // same get_available_models answer that backs listModels. Bounded like the
-    // discovery caches (one entry per target).
-    const primeContextWindows = new Map<
+    // `provider/model` -> registry entry per discovery target, filled from the
+    // same get_available_models answer that backs listModels; serves context
+    // windows for the usage meter and fast-mode eligibility at session start.
+    // Bounded like the discovery caches (one entry per target).
+    const primeRegistryModels = new Map<
       string,
-      { readonly expiresAt: number; readonly windows: ReadonlyMap<string, number> }
+      { readonly expiresAt: number; readonly models: ReadonlyMap<string, PrimeRegistryModel> }
     >();
-    const primeContextWindowRetryAt = new Map<string, number>();
+    const primeRegistryRetryAt = new Map<string, number>();
     const withThreadLock = yield* makeAcpThreadLock();
     // One lock per Prime sessions dir and session cwd. A fresh start holds it
     // from its pre-spawn snapshot until session-file detection settles, so two
@@ -704,16 +723,28 @@ export function makePrimeAdapter(
           primeSessionLocks.delete(key);
         }
       });
-    // Holds the lock for the rest of the calling scope.
-    const acquirePrimeSessionLock = (key: string): Effect.Effect<void, never, Scope.Scope> =>
+    // Holds the lock until the returned release effect runs or the calling
+    // scope closes, whichever comes first (the release is idempotent).
+    const acquirePrimeSessionLock = (
+      key: string,
+    ): Effect.Effect<Effect.Effect<void>, never, Scope.Scope> =>
       Effect.acquireRelease(
         Effect.suspend(() => {
           const entry = referencePrimeSessionLock(key);
-          return entry.semaphore.take(1).pipe(Effect.as(entry));
+          let released = false;
+          const release = Effect.suspend(() => {
+            if (released) {
+              return Effect.void;
+            }
+            released = true;
+            return entry.semaphore
+              .release(1)
+              .pipe(Effect.andThen(releasePrimeSessionLock(key, entry)));
+          });
+          return entry.semaphore.take(1).pipe(Effect.as(release));
         }),
-        (entry) =>
-          entry.semaphore.release(1).pipe(Effect.andThen(releasePrimeSessionLock(key, entry))),
-      ).pipe(Effect.asVoid);
+        (release) => release,
+      );
     const withPrimeSessionLock = <A, E, R>(
       key: string,
       effect: Effect.Effect<A, E, R>,
@@ -724,13 +755,23 @@ export function makePrimeAdapter(
           .withPermits(1)(effect)
           .pipe(Effect.ensuring(releasePrimeSessionLock(key, entry)));
       });
-    // Prime session ids already bound to other live contexts; detection must
-    // never re-bind one of them to a second thread.
-    const claimedPrimeSessionIds = (except: PrimeSessionContext): ReadonlySet<string> => {
+    // Session ids a fresh start has detected but not registered yet. A
+    // fast-mode restart relaunches with --resume after releasing its session
+    // lock, so without this another thread's deferred detection (whose
+    // snapshot predates the file) could bind the file meanwhile.
+    const startingPrimeSessionIds = new Map<ThreadId, string>();
+    // Prime session ids already bound to (or reserved by) other threads;
+    // detection must never re-bind one of them to a second thread.
+    const claimedPrimeSessionIds = (exceptThreadId: ThreadId): ReadonlySet<string> => {
       const claimed = new Set<string>();
       for (const other of sessions.values()) {
-        if (other !== except && other.primeSessionId !== undefined) {
+        if (other.threadId !== exceptThreadId && other.primeSessionId !== undefined) {
           claimed.add(other.primeSessionId);
+        }
+      }
+      for (const [threadId, sessionId] of startingPrimeSessionIds) {
+        if (threadId !== exceptThreadId) {
+          claimed.add(sessionId);
         }
       }
       return claimed;
@@ -784,18 +825,16 @@ export function makePrimeAdapter(
         const settings = yield* Effect.promise(() =>
           readPrimeUserSettings(resolvePrimeAgentDir(target.agentDir)),
         );
-        const windows = new Map<string, number>();
+        const registry = new Map<string, PrimeRegistryModel>();
         for (const registryModel of parsePrimeRegistryModels(modelsResponse.data)) {
-          if (registryModel.contextWindow !== undefined) {
-            windows.set(
-              `${registryModel.provider}/${registryModel.id}`,
-              registryModel.contextWindow,
-            );
+          const slug = primeModelSlug(registryModel);
+          if (!registry.has(slug)) {
+            registry.set(slug, registryModel);
           }
         }
-        setPrimeDiscoveryCacheEntry(primeContextWindows, primeDiscoveryCacheKey(target), {
+        setPrimeDiscoveryCacheEntry(primeRegistryModels, primeDiscoveryCacheKey(target), {
           expiresAt: Date.now() + PRIME_MODEL_DISCOVERY_CACHE_MS,
-          windows,
+          models: registry,
         });
         const models = parsePrimeModelRegistry({
           models: modelsResponse.data,
@@ -1066,45 +1105,115 @@ export function makePrimeAdapter(
         };
       });
 
-    // Context window for the model that produced a usage line, from Prime's
-    // registry. Served from the discovery cache while it is fresh (the same
-    // five minutes as listModels); a cold or expired cache runs one probe,
-    // and a failed probe backs off so a busy turn never blocks on it repeatedly.
-    const resolvePrimeContextWindow = (ctx: PrimeSessionContext, model: PrimeSessionModel) =>
+    // A model's entry in Prime's registry. Served from the discovery cache
+    // while it is fresh (the same five minutes as listModels); a cold or
+    // expired cache runs one probe, and a failed probe backs off so a busy
+    // turn never blocks on it repeatedly. Undefined for an unknown model.
+    const resolvePrimeRegistryModel = (
+      input: { readonly threadId: ThreadId; readonly discoveryTarget: PrimeDiscoveryTarget },
+      slug: string,
+    ) =>
       Effect.gen(function* () {
-        const slug = `${model.provider}/${model.modelId}`;
-        const cacheKey = primeDiscoveryCacheKey(ctx.discoveryTarget);
-        const cached = primeContextWindows.get(cacheKey);
+        const cacheKey = primeDiscoveryCacheKey(input.discoveryTarget);
+        const cached = primeRegistryModels.get(cacheKey);
         const known =
           cached !== undefined && cached.expiresAt > Date.now()
-            ? cached.windows.get(slug)
+            ? cached.models.get(slug)
             : undefined;
         if (known !== undefined) {
           return known;
         }
-        const retryAt = primeContextWindowRetryAt.get(cacheKey);
+        const retryAt = primeRegistryRetryAt.get(cacheKey);
         if (retryAt !== undefined && retryAt > Date.now()) {
           return undefined;
         }
-        const result = yield* discoverPrimeModels(ctx.discoveryTarget);
+        const result = yield* discoverPrimeModels(input.discoveryTarget);
         if (result.error !== undefined) {
-          primeContextWindowRetryAt.set(
-            cacheKey,
-            Date.now() + PRIME_CONTEXT_WINDOW_DISCOVERY_RETRY_MS,
-          );
-          yield* Effect.logWarning("prime.acp.session_usage_context_window_unavailable", {
-            threadId: ctx.threadId,
+          primeRegistryRetryAt.set(cacheKey, Date.now() + PRIME_REGISTRY_DISCOVERY_RETRY_MS);
+          yield* Effect.logWarning("prime.acp.registry_model_unavailable", {
+            threadId: input.threadId,
             model: slug,
             detail: result.error,
-            retryInMs: PRIME_CONTEXT_WINDOW_DISCOVERY_RETRY_MS,
+            retryInMs: PRIME_REGISTRY_DISCOVERY_RETRY_MS,
           });
           return undefined;
         }
-        primeContextWindowRetryAt.delete(cacheKey);
+        primeRegistryRetryAt.delete(cacheKey);
         // Whatever the probe (or the models cache it was served from, which
         // expires at the same moment) left behind is as fresh as listModels.
-        return primeContextWindows.get(cacheKey)?.windows.get(slug);
+        return primeRegistryModels.get(cacheKey)?.models.get(slug);
       });
+
+    // Context window for the model that produced a usage line.
+    const resolvePrimeContextWindow = (ctx: PrimeSessionContext, model: PrimeSessionModel) =>
+      Effect.map(
+        resolvePrimeRegistryModel(ctx, `${model.provider}/${model.modelId}`),
+        (registryModel) => registryModel?.contextWindow,
+      );
+
+    // The tier Synara asks Prime to seed for a thread. Fast mode is honoured
+    // only where Prime's own supportsFastMode would honour it (an unknown
+    // model is not eligible): Prime clamps every other model to "default" at
+    // session creation, so a restart could not change anything there.
+    const resolvePrimeDesiredServiceTier = (
+      input: { readonly threadId: ThreadId; readonly discoveryTarget: PrimeDiscoveryTarget },
+      modelSelection:
+        | { readonly model: string; readonly options?: PrimeModelOptions | undefined }
+        | undefined,
+    ): Effect.Effect<PrimeServiceTier> =>
+      Effect.gen(function* () {
+        const requested = primeServiceTierFor(modelSelection?.options);
+        if (requested === PRIME_SERVICE_TIER_DEFAULT || modelSelection === undefined) {
+          return PRIME_SERVICE_TIER_DEFAULT;
+        }
+        const registryModel = yield* resolvePrimeRegistryModel(input, modelSelection.model);
+        if (registryModel === undefined || !primeModelSupportsFastMode(registryModel)) {
+          yield* Effect.logInfo("prime.acp.fast_mode_unsupported", {
+            threadId: input.threadId,
+            model: modelSelection.model,
+            knownModel: registryModel !== undefined,
+          });
+          return PRIME_SERVICE_TIER_DEFAULT;
+        }
+        return requested;
+      });
+
+    // The tier Prime's next --resume of `file` would seed; undefined (after a
+    // warning) when the file cannot be read, so the start proceeds on
+    // whatever tier the file has.
+    const readPrimeSessionServiceTierOrWarn = (threadId: ThreadId, file: string) =>
+      readPrimeSessionServiceTier(file).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.catch((error) =>
+          Effect.logWarning("prime.acp.service_tier_read_failed", {
+            threadId,
+            file,
+            detail: error.message,
+          }).pipe(Effect.as(undefined)),
+        ),
+      );
+
+    // Appends the entry Prime's /fast would write. Only called between
+    // stopping the previous child and spawning the next one, never while a
+    // child may own the file. False (after a warning) when the append failed;
+    // the thread then keeps the tier the file already has.
+    const appendPrimeServiceTierChangeOrWarn = (
+      threadId: ThreadId,
+      file: string,
+      serviceTier: PrimeServiceTier,
+    ) =>
+      appendPrimeServiceTierChange(file, serviceTier).pipe(
+        Effect.provideService(FileSystem.FileSystem, fileSystem),
+        Effect.as(true),
+        Effect.catch((error) =>
+          Effect.logWarning("prime.acp.service_tier_append_failed", {
+            threadId,
+            file,
+            serviceTier,
+            detail: error.message,
+          }).pipe(Effect.as(false)),
+        ),
+      );
 
     // Emits whatever usage the compaction hold deferred. Idempotent: the
     // compaction outcome path and the hold fiber both call it.
@@ -1268,44 +1377,38 @@ export function makePrimeAdapter(
         yield* startPrimeSessionUsageTail(ctx, binding.file);
       });
 
-    // Callers hold the session lock for `detection.lockKey` while this runs.
-    const detectPrimeSessionFile = (
-      ctx: PrimeSessionContext,
-      detection: PrimeSessionDetection,
-      timeoutMs: number,
-    ) =>
+    // Polls for the session file a fresh start's child wrote. Callers hold
+    // the session lock for `detection.lockKey` while this runs.
+    const detectPrimeSessionFile = (input: {
+      readonly threadId: ThreadId;
+      readonly cwd: string;
+      readonly detection: PrimeSessionDetection;
+      readonly timeoutMs: number;
+    }): Effect.Effect<PrimeDetectedSession | undefined> =>
       Effect.gen(function* () {
-        const cwd = ctx.session.cwd;
-        if (cwd === undefined) {
-          return;
-        }
         const detected = yield* Effect.promise(() =>
           detectNewPrimeSession({
-            before: detection.snapshot,
-            cwd,
-            sinceMs: detection.spawnedAt,
-            timeoutMs,
-            claimedSessionIds: claimedPrimeSessionIds(ctx),
+            before: input.detection.snapshot,
+            cwd: input.cwd,
+            sinceMs: input.detection.spawnedAt,
+            timeoutMs: input.timeoutMs,
+            claimedSessionIds: claimedPrimeSessionIds(input.threadId),
           }),
         );
-        if (ctx.stopped) {
-          return;
-        }
         if (detected === undefined) {
-          ctx.sessionDetection = detection;
           yield* Effect.logInfo("prime.acp.session_file_not_detected", {
-            threadId: ctx.threadId,
-            sessionsDir: detection.snapshot.sessionsDir,
-            timeoutMs,
+            threadId: input.threadId,
+            sessionsDir: input.detection.snapshot.sessionsDir,
+            timeoutMs: input.timeoutMs,
           });
-          return;
+          return undefined;
         }
         yield* Effect.logInfo("prime.acp.session_file_detected", {
-          threadId: ctx.threadId,
+          threadId: input.threadId,
           sessionId: detected.sessionId,
           file: detected.file,
         });
-        yield* bindPrimeSessionFile(ctx, detected);
+        return detected;
       });
 
     const startSession: PrimeAdapterShape["startSession"] = (input) =>
@@ -1361,6 +1464,13 @@ export function makePrimeAdapter(
               ? Effect.void
               : Effect.sync(gatewaySessionLease.release),
           );
+          // A detected-but-unregistered session id is reserved only for the
+          // rest of this start; once registered, `sessions` claims it.
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              startingPrimeSessionIds.delete(input.threadId);
+            }),
+          );
 
           let ctx!: PrimeSessionContext;
           const acpNativeLoggers = makeAcpNativeLoggers({
@@ -1415,6 +1525,38 @@ export function makePrimeAdapter(
             }
           }
 
+          const discoveryTarget = resolveDiscoveryTarget(effectivePrimeSettings);
+          const serviceTier = yield* resolvePrimeDesiredServiceTier(
+            { threadId: input.threadId, discoveryTarget },
+            primeModelSelection,
+          );
+
+          // A resumed session keeps the tier its file says. Reconcile it with
+          // the thread's toggle now: the previous child for this thread is
+          // stopped (above) and the next one is not spawned yet, so nothing
+          // owns the file.
+          if (resumeSessionId !== undefined && resumeFile !== undefined) {
+            const currentTier = yield* readPrimeSessionServiceTierOrWarn(
+              input.threadId,
+              resumeFile,
+            );
+            if (currentTier !== undefined && currentTier !== serviceTier) {
+              const appended = yield* appendPrimeServiceTierChangeOrWarn(
+                input.threadId,
+                resumeFile,
+                serviceTier,
+              );
+              if (appended) {
+                yield* Effect.logInfo("prime.acp.service_tier_reconciled", {
+                  threadId: input.threadId,
+                  sessionId: resumeSessionId,
+                  from: currentTier,
+                  to: serviceTier,
+                });
+              }
+            }
+          }
+
           yield* Effect.logInfo("prime.acp.start", {
             marker: PRIME_ACP_TRANSPORT_DEBUG_MARKER,
             debugEnv: PRIME_ACP_DEBUG_ENV,
@@ -1424,23 +1566,25 @@ export function makePrimeAdapter(
             model: effectiveModel,
             requestedModel: primeModelSelection?.model,
             thinkingLevel: primeModelSelection?.options?.thinkingLevel,
+            serviceTier,
             alwaysApprove: input.runtimeMode === "full-access",
             binaryPath: resolvePrimeBinaryPath(effectivePrimeSettings.binaryPath),
             agentDir: effectivePrimeSettings.agentDir,
           });
 
           // A fresh start binds to the session file Prime writes at process
-          // start. Hold the lock for this sessions dir and cwd for the rest of
-          // this start (the startSession scope releases it after detection) so
-          // overlapping fresh starts in one cwd snapshot -> spawn -> detect one
-          // at a time.
+          // start. Hold the lock for this sessions dir and cwd until this start
+          // has settled (the startSession scope releases it; a fast-mode
+          // restart releases it early) so overlapping fresh starts in one cwd
+          // snapshot -> spawn -> detect one at a time.
           let sessionDetection: PrimeSessionDetection | undefined;
+          let releaseSessionLock: Effect.Effect<void> = Effect.void;
           if (resumeSessionId === undefined) {
             const lockKey = primeSessionLockKey(
               sessionsDir,
               yield* Effect.promise(() => canonicalPrimeSessionCwd(cwd)),
             );
-            yield* acquirePrimeSessionLock(lockKey);
+            releaseSessionLock = yield* acquirePrimeSessionLock(lockKey);
             // Snapshot the sessions dir before Prime can write its new file so
             // the post-start detection has a stable "before" set.
             sessionDetection = {
@@ -1512,39 +1656,112 @@ export function makePrimeAdapter(
               return { acp, started };
             });
 
-          let attempt = 0;
-          let runtime: PrimeStartedRuntime;
-          while (true) {
-            attempt += 1;
-            const outcome = yield* startPrimeRuntime(sessionScope).pipe(Effect.exit);
-            if (Exit.isSuccess(outcome)) {
-              runtime = outcome.value;
-              break;
+          // Spawns into the current sessionScope. A resumed start retries a
+          // bounded number of times; a fresh start never does. Reads
+          // resumeSessionId when run, so the fast-mode restart below reuses it.
+          const startPrimeRuntimeWithRetries: Effect.Effect<
+            PrimeStartedRuntime,
+            ProviderAdapterError
+          > = Effect.gen(function* () {
+            let attempt = 0;
+            while (true) {
+              attempt += 1;
+              const outcome = yield* startPrimeRuntime(sessionScope).pipe(Effect.exit);
+              if (Exit.isSuccess(outcome)) {
+                return outcome.value;
+              }
+              if (
+                resumeSessionId === undefined ||
+                attempt >= PRIME_RESUME_START_ATTEMPTS ||
+                !isRetryablePrimeResumeStartFailure(outcome.cause)
+              ) {
+                return yield* Effect.failCause(outcome.cause);
+              }
+              yield* Effect.logWarning("prime.acp.resume_start_retry", {
+                threadId: input.threadId,
+                sessionId: resumeSessionId,
+                attempt,
+                maxAttempts: PRIME_RESUME_START_ATTEMPTS,
+                delayMs: timeouts.resumeStartRetryDelayMs,
+                detail: describeCause(outcome.cause),
+              });
+              yield* Effect.ignore(Scope.close(sessionScope, Exit.void));
+              yield* Effect.sleep(timeouts.resumeStartRetryDelayMs);
+              sessionScope = yield* Scope.make("sequential");
             }
-            if (
-              resumeSessionId === undefined ||
-              attempt >= PRIME_RESUME_START_ATTEMPTS ||
-              !isRetryablePrimeResumeStartFailure(outcome.cause)
-            ) {
-              return yield* Effect.failCause(outcome.cause);
-            }
-            yield* Effect.logWarning("prime.acp.resume_start_retry", {
+          });
+          let runtime = yield* startPrimeRuntimeWithRetries;
+
+          // A fresh start locates its session file before the session is
+          // registered, so a fast-mode restart can relaunch into the resume
+          // path without tearing down a registered session.
+          let detectedSession: PrimeDetectedSession | undefined;
+          if (sessionDetection !== undefined) {
+            detectedSession = yield* detectPrimeSessionFile({
               threadId: input.threadId,
-              sessionId: resumeSessionId,
-              attempt,
-              maxAttempts: PRIME_RESUME_START_ATTEMPTS,
-              delayMs: timeouts.resumeStartRetryDelayMs,
-              detail: describeCause(outcome.cause),
+              cwd,
+              detection: sessionDetection,
+              timeoutMs: timeouts.sessionDetectMs,
             });
-            yield* Effect.ignore(Scope.close(sessionScope, Exit.void));
-            yield* Effect.sleep(timeouts.resumeStartRetryDelayMs);
-            sessionScope = yield* Scope.make("sequential");
+            if (detectedSession === undefined) {
+              // Detection is retried after the first turn, when a restart would
+              // discard that turn; the tier applies from the next restart.
+              if (serviceTier !== PRIME_SERVICE_TIER_DEFAULT) {
+                yield* Effect.logDebug("prime.acp.service_tier_deferred", {
+                  threadId: input.threadId,
+                  serviceTier,
+                });
+              }
+            } else {
+              startingPrimeSessionIds.set(input.threadId, detectedSession.sessionId);
+              sessionDetection = undefined;
+              if (serviceTier !== PRIME_SERVICE_TIER_DEFAULT) {
+                const currentTier = yield* readPrimeSessionServiceTierOrWarn(
+                  input.threadId,
+                  detectedSession.file,
+                );
+                if (currentTier !== undefined && currentTier !== serviceTier) {
+                  // The entry can only be appended while no child owns the
+                  // file: kill this child, append, and relaunch with --resume
+                  // through the resumed-start machinery above. Other fresh
+                  // starts in this cwd may proceed once the file is settled.
+                  yield* Effect.ignore(Scope.close(sessionScope, Exit.void));
+                  const appended = yield* appendPrimeServiceTierChangeOrWarn(
+                    input.threadId,
+                    detectedSession.file,
+                    serviceTier,
+                  );
+                  if (appended) {
+                    yield* Effect.logInfo("prime.acp.service_tier_restart", {
+                      threadId: input.threadId,
+                      sessionId: detectedSession.sessionId,
+                      from: currentTier,
+                      to: serviceTier,
+                    });
+                  }
+                  resumeSessionId = detectedSession.sessionId;
+                  resumeFile = detectedSession.file;
+                  detectedSession = undefined;
+                  yield* releaseSessionLock;
+                  sessionScope = yield* Scope.make("sequential");
+                  runtime = yield* startPrimeRuntimeWithRetries;
+                }
+              }
+            }
           }
           const { acp, started } = runtime;
 
           // Only a successfully started child may release the gateway lease
-          // on exit; a retried attempt's early exit must not tear it down.
+          // on exit; the early exit of a retried attempt or of a fresh child
+          // replaced by a fast-mode restart must not tear it down.
           yield* startAgentGatewaySessionLeaseExitWatcher(gatewaySessionLease, acp.awaitExit);
+
+          // The session file this start knows: the resumed file, or the one a
+          // fresh start just detected. Its header id is the resume cursor.
+          const boundSession: PrimeDetectedSession | undefined =
+            resumeSessionId !== undefined && resumeFile !== undefined
+              ? { sessionId: resumeSessionId, file: resumeFile }
+              : detectedSession;
 
           const sessionConfigReady = yield* Deferred.make<void>();
           const now = yield* nowIso;
@@ -1555,8 +1772,8 @@ export function makePrimeAdapter(
             cwd,
             model: primeModelSelection?.model,
             threadId: input.threadId,
-            ...(resumeSessionId !== undefined
-              ? { resumeCursor: buildPrimeResumeCursor(resumeSessionId) }
+            ...(boundSession !== undefined
+              ? { resumeCursor: buildPrimeResumeCursor(boundSession.sessionId) }
               : {}),
             createdAt: now,
             updatedAt: now,
@@ -1582,8 +1799,8 @@ export function makePrimeAdapter(
             primeToolCallLifecycleById: new Map(),
             sessionUpdatesProcessed: 0,
             sessionConfigReady,
-            sessionDetection: undefined,
-            primeSessionId: resumeSessionId,
+            sessionDetection,
+            primeSessionId: boundSession?.sessionId,
             turnStarting: false,
             pendingTurnInterrupted: false,
             compactingThread: false,
@@ -1591,7 +1808,7 @@ export function makePrimeAdapter(
             compactionQuietUntil: undefined,
             compactionCancelFiber: undefined,
             latestSessionCostUsd: undefined,
-            discoveryTarget: resolveDiscoveryTarget(effectivePrimeSettings),
+            discoveryTarget,
             sessionUsageTail: undefined,
             pendingSessionUsageEmit: undefined,
             pendingSessionUsageHoldFiber: undefined,
@@ -1782,9 +1999,6 @@ export function makePrimeAdapter(
           // session scope, so any failure OR interruption of the remaining
           // startup steps must tear the session down explicitly.
           yield* Effect.gen(function* () {
-            if (sessionDetection !== undefined) {
-              yield* detectPrimeSessionFile(ctx, sessionDetection, timeouts.sessionDetectMs);
-            }
             // Startup configuration has settled; turns gated on this deferred
             // can now prompt. Prime model options are process-start settings.
             yield* Deferred.succeed(sessionConfigReady, undefined);
@@ -1813,10 +2027,10 @@ export function makePrimeAdapter(
               // durable identity a later --resume relaunch reopens.
               payload: { providerThreadId: ctx.primeSessionId ?? started.sessionId },
             });
-            // A resumed session's file is known up front; its catch-up read
-            // reports the thread's current context right after thread.started.
-            if (resumeSessionId !== undefined && resumeFile !== undefined) {
-              yield* bindPrimeSessionFile(ctx, { sessionId: resumeSessionId, file: resumeFile });
+            // The bound file's catch-up read reports the thread's current
+            // context right after thread.started (nothing yet for a fresh file).
+            if (boundSession !== undefined) {
+              yield* bindPrimeSessionFile(ctx, boundSession);
             }
           }).pipe(
             Effect.onExit((exit) =>
@@ -2109,14 +2323,21 @@ export function makePrimeAdapter(
                 // session lock keeps the retry from overlapping another fresh
                 // start's snapshot -> spawn -> detect window in the same cwd.
                 const pendingDetection = ctx.sessionDetection;
-                if (pendingDetection !== undefined) {
+                const detectionCwd = ctx.session.cwd;
+                if (pendingDetection !== undefined && detectionCwd !== undefined) {
                   yield* withPrimeSessionLock(
                     pendingDetection.lockKey,
-                    detectPrimeSessionFile(
-                      ctx,
-                      pendingDetection,
-                      PRIME_SESSION_DETECT_RETRY_TIMEOUT_MS,
-                    ),
+                    Effect.gen(function* () {
+                      const detected = yield* detectPrimeSessionFile({
+                        threadId: ctx.threadId,
+                        cwd: detectionCwd,
+                        detection: pendingDetection,
+                        timeoutMs: PRIME_SESSION_DETECT_RETRY_TIMEOUT_MS,
+                      });
+                      if (detected !== undefined && !ctx.stopped) {
+                        yield* bindPrimeSessionFile(ctx, detected);
+                      }
+                    }),
                   );
                 }
                 const completion = classifyAcpPromptTurnCompletion({

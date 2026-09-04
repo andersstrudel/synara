@@ -21,6 +21,8 @@ import {
   type ProviderOptionSelection,
   type PiModelOptions,
   type PiThinkingLevel,
+  type PrimeModelOptions,
+  type PrimeThinkingLevel,
   type ProviderKind,
   type ProviderWithDefaultModel,
   CodexReasoningEffort,
@@ -850,6 +852,29 @@ export function normalizePiModelOptions(
   return thinkingLevel && PI_THINKING_LEVEL_SET.has(thinkingLevel as PiThinkingLevel)
     ? { thinkingLevel: thinkingLevel as PiThinkingLevel }
     : undefined;
+}
+
+// Prime shares Pi's thinking ladder but also carries a fast-mode flag, so the
+// Pi normalizer cannot be reused verbatim: it would drop `fastMode` on every
+// pass. Only `fastMode: true` survives (off is the default, so it is omitted).
+// When capabilities are supplied, fast mode is additionally gated on the
+// runtime descriptor so models Prime clamps to the default tier never dispatch it.
+export function normalizePrimeModelOptions(
+  modelOptions: PrimeModelOptions | null | undefined,
+  capabilities?: Pick<ModelCapabilities, "supportsFastMode">,
+): PrimeModelOptions | undefined {
+  const rawThinkingLevel = trimOrNull(modelOptions?.thinkingLevel);
+  const thinkingLevel =
+    rawThinkingLevel && PI_THINKING_LEVEL_SET.has(rawThinkingLevel as PiThinkingLevel)
+      ? (rawThinkingLevel as PrimeThinkingLevel)
+      : undefined;
+  const fastModeEnabled =
+    modelOptions?.fastMode === true && (capabilities ? capabilities.supportsFastMode : true);
+  const nextOptions: PrimeModelOptions = {
+    ...(thinkingLevel ? { thinkingLevel } : {}),
+    ...(fastModeEnabled ? { fastMode: true } : {}),
+  };
+  return Object.keys(nextOptions).length > 0 ? nextOptions : undefined;
 }
 
 export function normalizeOpenCodeModelOptions(

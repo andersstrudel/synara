@@ -7,6 +7,7 @@ import {
   type CursorModelOptions,
   DEFAULT_MODEL_BY_PROVIDER,
   type OpenCodeModelOptions,
+  type PrimeModelOptions,
   type ProviderModelDescriptor,
   ProjectId,
   ThreadId,
@@ -482,6 +483,175 @@ describe("TraitsPicker (Codex)", () => {
     // The toggle flips in place: the menu stays open. (This harness passes
     // `modelOptions` as a static prop, so the pressed state itself only
     // re-renders in store-backed mounts like the Claude harness above.)
+    await vi.waitFor(() => {
+      expect(document.body.textContent ?? "").toContain("Effort");
+    });
+  });
+});
+
+// ── Prime TraitsPicker tests ──────────────────────────────────────────
+
+const PRIME_THREAD_ID = ThreadId.makeUnsafe("thread-prime-traits");
+
+const PRIME_RUNTIME_GPT_5_5: ProviderModelDescriptor = {
+  slug: "openai/gpt-5.5",
+  name: "GPT-5.5",
+  upstreamProviderId: "openai",
+  upstreamProviderName: "OpenAI",
+  supportedReasoningEfforts: [
+    { value: "low", label: "Low" },
+    { value: "medium", label: "Medium" },
+    { value: "high", label: "High" },
+  ],
+  defaultReasoningEffort: "medium",
+};
+
+async function mountPrimePicker(props: {
+  runtimeModel: ProviderModelDescriptor;
+  options?: PrimeModelOptions;
+}) {
+  const model = props.runtimeModel.slug;
+  const draftsByThreadId: Record<ThreadId, ComposerThreadDraftState> = {
+    [PRIME_THREAD_ID]: {
+      prompt: "",
+      promptHistorySavedDraft: null,
+      images: [],
+      files: [],
+      nonPersistedImageIds: [],
+      persistedAttachments: [],
+      assistantSelections: [],
+      browserAnnotations: [],
+      terminalContexts: [],
+      fileComments: [],
+      pastedTexts: [],
+      skills: [],
+      mentions: [],
+      queuedTurns: [],
+      modelSelectionByProvider: {
+        prime: {
+          provider: "prime",
+          model,
+          ...(props.options ? { options: props.options } : {}),
+        },
+      },
+      activeProvider: "prime",
+      runtimeMode: null,
+      interactionMode: null,
+    },
+  };
+
+  useComposerDraftStore.setState({
+    draftsByThreadId,
+    draftThreadsByThreadId: {},
+    projectDraftThreadIdByProjectId: {
+      [ProjectId.makeUnsafe("project-prime-traits")]: PRIME_THREAD_ID,
+    },
+  });
+  const host = document.createElement("div");
+  document.body.append(host);
+  const screen = await render(
+    <TraitsPicker
+      provider="prime"
+      threadId={PRIME_THREAD_ID}
+      model={model}
+      runtimeModel={props.runtimeModel}
+      prompt=""
+      modelOptions={props.options}
+      onPromptChange={() => {}}
+    />,
+    { container: host },
+  );
+
+  const cleanup = async () => {
+    await screen.unmount();
+    host.remove();
+  };
+
+  return {
+    [Symbol.asyncDispose]: cleanup,
+    cleanup,
+  };
+}
+
+describe("TraitsPicker (Prime)", () => {
+  afterEach(() => {
+    document.body.innerHTML = "";
+    localStorage.removeItem(COMPOSER_DRAFT_STORAGE_KEY);
+    useComposerDraftStore.setState({
+      draftsByThreadId: {},
+      draftThreadsByThreadId: {},
+      projectDraftThreadIdByProjectId: {},
+      stickyModelSelectionByProvider: {},
+    });
+  });
+
+  it("shows the fast mode toggle in the Effort header when discovery advertises it", async () => {
+    await using _ = await mountPrimePicker({
+      runtimeModel: { ...PRIME_RUNTIME_GPT_5_5, supportsFastMode: true },
+      options: { thinkingLevel: "high" },
+    });
+
+    await page.getByRole("button").click();
+
+    await vi.waitFor(() => {
+      expect(document.body.textContent ?? "").toContain("Effort");
+      expect(document.body.textContent ?? "").not.toContain("Speed");
+      const toggle = document.body.querySelector('[aria-label="Fast mode"]');
+      expect(toggle).not.toBeNull();
+      expect(toggle?.getAttribute("aria-pressed")).toBe("false");
+    });
+  });
+
+  it("shows Fast in the trigger label when fast mode is active", async () => {
+    await using _ = await mountPrimePicker({
+      runtimeModel: { ...PRIME_RUNTIME_GPT_5_5, supportsFastMode: true },
+      options: { thinkingLevel: "high", fastMode: true },
+    });
+
+    await vi.waitFor(() => {
+      expect(document.body.textContent ?? "").toMatch(/High\s*·\s*Fast/u);
+    });
+  });
+
+  it("hides the fast mode toggle when discovery does not advertise it", async () => {
+    await using _ = await mountPrimePicker({
+      runtimeModel: PRIME_RUNTIME_GPT_5_5,
+      options: { thinkingLevel: "high", fastMode: true },
+    });
+
+    await page.getByRole("button").click();
+
+    await vi.waitFor(() => {
+      const text = document.body.textContent ?? "";
+      expect(text).toContain("Effort");
+      expect(text).not.toContain("Fast");
+      expect(document.body.querySelector('[aria-label="Fast mode"]')).toBeNull();
+    });
+  });
+
+  it("persists sticky Prime model options when the fast mode toggle flips", async () => {
+    await using _ = await mountPrimePicker({
+      runtimeModel: { ...PRIME_RUNTIME_GPT_5_5, supportsFastMode: true },
+      options: { thinkingLevel: "high" },
+    });
+
+    await page.getByRole("button").click();
+    await page.getByRole("button", { name: "Fast mode" }).click();
+
+    expect(useComposerDraftStore.getState().stickyModelSelectionByProvider.prime).toMatchObject({
+      provider: "prime",
+      options: { thinkingLevel: "high", fastMode: true },
+    });
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[PRIME_THREAD_ID]?.modelSelectionByProvider
+        .prime,
+    ).toMatchObject({
+      provider: "prime",
+      model: PRIME_RUNTIME_GPT_5_5.slug,
+      options: { thinkingLevel: "high", fastMode: true },
+    });
+
+    // The toggle flips in place: the menu stays open.
     await vi.waitFor(() => {
       expect(document.body.textContent ?? "").toContain("Effort");
     });

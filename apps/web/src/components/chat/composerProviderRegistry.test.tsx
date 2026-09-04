@@ -1202,6 +1202,104 @@ describe("getComposerProviderState", () => {
     });
   });
 
+  it("surfaces the Prime fast toggle and dispatches fast mode when discovery advertises it", () => {
+    const runtimeModel: ProviderModelDescriptor = {
+      ...PRIME_RUNTIME_MODEL_WITH_REASONING,
+      slug: "openai/gpt-5.5",
+      name: "GPT-5.5",
+      upstreamProviderId: "openai",
+      upstreamProviderName: "OpenAI",
+      supportsFastMode: true,
+    };
+    const selection = getComposerTraitSelection(
+      "prime",
+      runtimeModel.slug,
+      "",
+      { thinkingLevel: "xhigh", fastMode: true },
+      runtimeModel,
+    );
+    const state = getComposerProviderState({
+      provider: "prime",
+      model: runtimeModel.slug,
+      runtimeModel,
+      prompt: "",
+      modelOptions: {
+        prime: {
+          thinkingLevel: "xhigh",
+          fastMode: true,
+        },
+      },
+    });
+
+    expect(selection.caps.supportsFastMode).toBe(true);
+    expect(selection.fastModeDescriptor).toMatchObject({
+      id: "fastMode",
+      type: "boolean",
+      currentValue: true,
+    });
+    expect(selection.fastModeEnabled).toBe(true);
+    expect(selection.effortLevels.length).toBeGreaterThan(0);
+    expect(state).toEqual({
+      provider: "prime",
+      promptEffort: "xhigh",
+      modelOptionsForDispatch: {
+        thinkingLevel: "xhigh",
+        fastMode: true,
+      },
+    });
+  });
+
+  it("leaves the Prime fast toggle off until the user turns it on", () => {
+    const runtimeModel: ProviderModelDescriptor = {
+      ...PRIME_RUNTIME_MODEL_WITH_REASONING,
+      supportsFastMode: true,
+    };
+    const selection = getComposerTraitSelection(
+      "prime",
+      runtimeModel.slug,
+      "",
+      { thinkingLevel: "xhigh" },
+      runtimeModel,
+    );
+
+    expect(selection.fastModeDescriptor).toMatchObject({ id: "fastMode", type: "boolean" });
+    expect(selection.fastModeDescriptor?.currentValue).toBeUndefined();
+    expect(selection.fastModeEnabled).toBe(false);
+  });
+
+  it("hides the Prime fast toggle and drops fast mode when discovery does not advertise it", () => {
+    const selection = getComposerTraitSelection(
+      "prime",
+      "cerebras/qwen-3.8-27b",
+      "",
+      { thinkingLevel: "xhigh", fastMode: true },
+      PRIME_RUNTIME_MODEL_WITH_REASONING,
+    );
+    const state = getComposerProviderState({
+      provider: "prime",
+      model: "cerebras/qwen-3.8-27b",
+      runtimeModel: PRIME_RUNTIME_MODEL_WITH_REASONING,
+      prompt: "",
+      modelOptions: {
+        prime: {
+          thinkingLevel: "xhigh",
+          fastMode: true,
+        },
+      },
+    });
+
+    expect(selection.caps.supportsFastMode).toBe(false);
+    expect(selection.fastModeDescriptor).toBeNull();
+    expect(selection.fastModeEnabled).toBe(false);
+    expect(state).toEqual({
+      provider: "prime",
+      promptEffort: "xhigh",
+      modelOptionsForDispatch: {
+        thinkingLevel: "xhigh",
+      },
+    });
+  });
+
   it("does not render a traits picker for OpenCode models without exposed controls", () => {
     const threadId = ThreadId.makeUnsafe("thread-opencode-traits-hidden");
 

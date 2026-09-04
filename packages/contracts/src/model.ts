@@ -139,6 +139,9 @@ export type PrimeThinkingLevel = (typeof PRIME_THINKING_LEVEL_OPTIONS)[number];
 
 export const PrimeModelOptions = Schema.Struct({
   thinkingLevel: Schema.optional(Schema.Literals(PRIME_THINKING_LEVEL_OPTIONS)),
+  // Prime applies fast mode through its own service tier; runtime discovery
+  // reports `supportsFastMode` only for the models Prime lets out of the default tier.
+  fastMode: Schema.optional(Schema.Boolean),
 });
 export type PrimeModelOptions = typeof PrimeModelOptions.Type;
 

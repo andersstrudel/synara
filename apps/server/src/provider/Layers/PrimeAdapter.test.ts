@@ -1782,3 +1782,286 @@ describe("Prime session-file usage through the adapter", () => {
     );
   });
 });
+
+// Fast mode rides Prime's `priority` service tier, seeded through the session
+// file (see PrimeSessionServiceTier) because ACP mode cannot set it per request.
+function serviceTierEntry(id: string, parentId: string | null, serviceTier: string) {
+  return {
+    type: "service_tier_change",
+    id,
+    parentId,
+    timestamp: new Date().toISOString(),
+    serviceTier,
+  };
+}
+
+/** Every entry (header included) of the single session file in the sessions dir. */
+function readSoleSessionEntries(agent: PrimeMockAgent): ReadonlyArray<Record<string, unknown>> {
+  const names = readdirSync(agent.sessionsDir).filter((entry) => entry.endsWith(".jsonl"));
+  const name = names[0];
+  if (name === undefined || names.length > 1) {
+    throw new Error(`Expected exactly one Prime session file, found ${names.length}`);
+  }
+  return readJsonLines<Record<string, unknown>>(path.join(agent.sessionsDir, name));
+}
+
+/** The argv every Prime spawn in these tests starts with, before any `--resume`. */
+function primeSpawnArgs(agent: PrimeMockAgent, model: string): ReadonlyArray<string> {
+  return ["--mode", "acp", "--cwd", agent.cwd, "--model", model];
+}
+
+describe("Prime fast mode through the adapter", () => {
+  // One model Prime lets into the priority tier and one it clamps back to
+  // default (its supportsFastMode rule), both served by openai-codex.
+  const registryData = {
+    models: [
+      {
+        id: "gpt-5.6-sol",
+        name: "GPT-5.6 Sol",
+        api: "openai-codex-responses",
+        provider: "openai-codex",
+        reasoning: true,
+        input: ["text"],
+        contextWindow: 272_000,
+      },
+      {
+        id: "gpt-6-astra",
+        name: "GPT-6 Astra",
+        api: "openai-codex-responses",
+        provider: "openai-codex",
+        reasoning: true,
+        input: ["text"],
+        contextWindow: 400_000,
+      },
+    ],
+  };
+  const discoveryStub = () => rpcDiscoveryStub([["models", registryData]]);
+  const baseArgs = primeSpawnArgs;
+
+  it("restarts a fresh start into --resume once its session file carries the priority tier", async () => {
+    const agent = makePrimeMockAgent();
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* PrimeAdapter;
+        const { events, collector, waitFor } = collectRuntimeEvents(adapter.streamEvents);
+        const collectorFiber = yield* collector;
+        const threadId = ThreadId.makeUnsafe("thread-prime-fast-fresh");
+
+        const session = yield* adapter.startSession({
+          provider: "prime",
+          threadId,
+          runtimeMode: "full-access",
+          cwd: agent.cwd,
+          modelSelection: {
+            provider: "prime",
+            model: "openai-codex/gpt-5.6-sol",
+            options: { fastMode: true },
+          },
+        });
+
+        // The first child wrote the file (default tier); it was killed, the
+        // tier entry appended, and a second child relaunched onto that file.
+        const sessionId = readSoleSessionId(agent);
+        expect(session.resumeCursor).toEqual(buildPrimeResumeCursor(sessionId));
+        expect(agent.readArgs()).toEqual([
+          baseArgs(agent, "openai-codex/gpt-5.6-sol"),
+          [...baseArgs(agent, "openai-codex/gpt-5.6-sol"), "--resume", sessionId],
+        ]);
+        const entries = readSoleSessionEntries(agent);
+        expect(entries).toHaveLength(2);
+        expect(entries[1]).toMatchObject({
+          type: "service_tier_change",
+          parentId: null,
+          serviceTier: "priority",
+        });
+        expect(entries[1]?.id).toMatch(/^[0-9a-f]{8}$/u);
+
+        // Only the relaunched child is the thread's session.
+        const started = yield* waitFor((event) => event.type === "thread.started");
+        expect(started).toMatchObject({ payload: { providerThreadId: sessionId } });
+        expect(events.filter((event) => event.type === "session.started")).toHaveLength(1);
+        expect(events.some((event) => event.type === "session.exited")).toBe(false);
+        expect(
+          agent.readRequests().filter((request) => request.method === "session/new"),
+        ).toHaveLength(2);
+
+        const turn = yield* adapter.sendTurn({ threadId, input: "hello fast", attachments: [] });
+        expect(turn.resumeCursor).toEqual(buildPrimeResumeCursor(sessionId));
+        yield* waitFor((event) => event.type === "turn.completed" && event.turnId === turn.turnId);
+        expect(promptTexts(agent.readRequests())).toEqual(["hello fast"]);
+
+        yield* adapter.stopSession(threadId);
+        yield* waitFor((event) => event.type === "session.exited");
+        yield* Fiber.interrupt(collectorFiber);
+      }).pipe(
+        Effect.provide(
+          makePrimeAdapterTestLayer(
+            { binaryPath: agent.binaryPath, agentDir: agent.agentDir },
+            { runRpcDiscovery: discoveryStub() },
+          ),
+        ),
+      ),
+    );
+  });
+
+  it("appends a default tier entry before resuming when fast mode is off but the file says priority", async () => {
+    const agent = makePrimeMockAgent();
+    const resumeSessionId = "prime-header-fast-off";
+    const file = writePrimeSessionFile(agent, resumeSessionId);
+    appendFileSync(
+      file,
+      [serviceTierEntry("t1", null, "priority"), userEntry("u1", "t1", "hello")]
+        .map((entry) => `${JSON.stringify(entry)}\n`)
+        .join(""),
+    );
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* PrimeAdapter;
+        const threadId = ThreadId.makeUnsafe("thread-prime-fast-off");
+        const session = yield* adapter.startSession({
+          provider: "prime",
+          threadId,
+          runtimeMode: "full-access",
+          cwd: agent.cwd,
+          resumeCursor: buildPrimeResumeCursor(resumeSessionId),
+          modelSelection: { provider: "prime", model: "openai-codex/gpt-5.6-sol" },
+        });
+
+        expect(session.resumeCursor).toEqual(buildPrimeResumeCursor(resumeSessionId));
+        expect(agent.readArgs()).toEqual([
+          [...baseArgs(agent, "openai-codex/gpt-5.6-sol"), "--resume", resumeSessionId],
+        ]);
+        const entries = readJsonLines<Record<string, unknown>>(file);
+        expect(entries.map((entry) => entry.type)).toEqual([
+          "session",
+          "service_tier_change",
+          "message",
+          "service_tier_change",
+        ]);
+        expect(entries[3]).toMatchObject({ parentId: "u1", serviceTier: "default" });
+        expect(entries[3]?.id).toMatch(/^[0-9a-f]{8}$/u);
+        expect(["t1", "u1"]).not.toContain(entries[3]?.id);
+
+        yield* adapter.stopSession(threadId);
+      }).pipe(
+        Effect.provide(
+          makePrimeAdapterTestLayer({ binaryPath: agent.binaryPath, agentDir: agent.agentDir }),
+        ),
+      ),
+    );
+  });
+
+  it("leaves a resumed file alone when its tier already matches", async () => {
+    const agent = makePrimeMockAgent();
+    const resumeSessionId = "prime-header-fast-match";
+    const file = writePrimeSessionFile(agent, resumeSessionId);
+    appendFileSync(
+      file,
+      [serviceTierEntry("t1", null, "priority"), userEntry("u1", "t1", "hello")]
+        .map((entry) => `${JSON.stringify(entry)}\n`)
+        .join(""),
+    );
+    const before = readFileSync(file, "utf8");
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* PrimeAdapter;
+        const threadId = ThreadId.makeUnsafe("thread-prime-fast-match");
+        yield* adapter.startSession({
+          provider: "prime",
+          threadId,
+          runtimeMode: "full-access",
+          cwd: agent.cwd,
+          resumeCursor: buildPrimeResumeCursor(resumeSessionId),
+          modelSelection: {
+            provider: "prime",
+            model: "openai-codex/gpt-5.6-sol",
+            options: { fastMode: true },
+          },
+        });
+
+        expect(agent.readArgs()).toEqual([
+          [...baseArgs(agent, "openai-codex/gpt-5.6-sol"), "--resume", resumeSessionId],
+        ]);
+        expect(readFileSync(file, "utf8")).toBe(before);
+
+        yield* adapter.stopSession(threadId);
+      }).pipe(
+        Effect.provide(
+          makePrimeAdapterTestLayer(
+            { binaryPath: agent.binaryPath, agentDir: agent.agentDir },
+            { runRpcDiscovery: discoveryStub() },
+          ),
+        ),
+      ),
+    );
+  });
+
+  it("ignores fast mode on a model Prime would clamp back to the default tier", async () => {
+    const agent = makePrimeMockAgent();
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* PrimeAdapter;
+        const threadId = ThreadId.makeUnsafe("thread-prime-fast-ineligible");
+        const session = yield* adapter.startSession({
+          provider: "prime",
+          threadId,
+          runtimeMode: "full-access",
+          cwd: agent.cwd,
+          modelSelection: {
+            provider: "prime",
+            model: "openai-codex/gpt-6-astra",
+            options: { fastMode: true },
+          },
+        });
+
+        const sessionId = readSoleSessionId(agent);
+        expect(session.resumeCursor).toEqual(buildPrimeResumeCursor(sessionId));
+        expect(agent.readArgs()).toEqual([baseArgs(agent, "openai-codex/gpt-6-astra")]);
+        expect(readSoleSessionEntries(agent).map((entry) => entry.type)).toEqual(["session"]);
+
+        yield* adapter.stopSession(threadId);
+      }).pipe(
+        Effect.provide(
+          makePrimeAdapterTestLayer(
+            { binaryPath: agent.binaryPath, agentDir: agent.agentDir },
+            { runRpcDiscovery: discoveryStub() },
+          ),
+        ),
+      ),
+    );
+  });
+
+  it("treats a model the registry cannot vouch for as ineligible", async () => {
+    const agent = makePrimeMockAgent();
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* PrimeAdapter;
+        const threadId = ThreadId.makeUnsafe("thread-prime-fast-unknown");
+        yield* adapter.startSession({
+          provider: "prime",
+          threadId,
+          runtimeMode: "full-access",
+          cwd: agent.cwd,
+          modelSelection: {
+            provider: "prime",
+            model: "openai-codex/gpt-5.6-sol",
+            options: { fastMode: true },
+          },
+        });
+
+        expect(agent.readArgs()).toEqual([baseArgs(agent, "openai-codex/gpt-5.6-sol")]);
+        expect(readSoleSessionEntries(agent).map((entry) => entry.type)).toEqual(["session"]);
+
+        yield* adapter.stopSession(threadId);
+      }).pipe(
+        Effect.provide(
+          makePrimeAdapterTestLayer(
+            { binaryPath: agent.binaryPath, agentDir: agent.agentDir },
+            // The registry probe answers nothing: discovery reports an error.
+            { runRpcDiscovery: rpcDiscoveryStub([]) },
+          ),
+        ),
+      ),
+    );
+  });
+});

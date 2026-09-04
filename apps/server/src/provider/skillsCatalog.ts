@@ -358,6 +358,7 @@ const HOME_ORIGIN_ORDER = [
   "factory",
   "opencode",
   "pi",
+  "prime",
   "devin",
   "agents",
 ] as const;
@@ -447,6 +448,11 @@ const SKILL_ORIGIN_ROOTS = {
     homeRoots: (input) => [nodePath.join(input.homeDir, ".pi", "agent", "skills")],
     projectRootNames: [".pi"],
   },
+  prime: {
+    // Prime Agent mirrors Pi's `<agentDir>/skills` layout under ~/.prime/agent.
+    homeRoots: (input) => [nodePath.join(input.homeDir, ".prime", "agent", "skills")],
+    projectRootNames: [nodePath.join(".prime", "agent")],
+  },
   devin: {
     homeRoots: (input) => [
       ...(process.platform === "win32"
@@ -480,6 +486,7 @@ const PROVIDER_SKILL_ORIGIN_PREFERENCES = {
   droid: ["factory", "agents", "claude", "codex"],
   opencode: ["opencode", "claude", "agents"],
   pi: ["pi", "agents"],
+  prime: ["prime", "agents"],
   devin: ["devin", "claude", "agents"],
 } as const satisfies Partial<Record<ProviderKind, readonly SkillsHomeOrigin[]>>;
 

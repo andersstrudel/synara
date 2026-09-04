@@ -17,6 +17,14 @@ describe("ProviderIcon", () => {
     expect(markup).toContain("#FFE432");
   });
 
+  it("renders the Prime mark in currentColor so it follows the provider tone", () => {
+    const markup = renderToStaticMarkup(<ProviderIcon provider="prime" className="size-4" />);
+
+    expect(markup).toContain('viewBox="0 0 178 178"');
+    expect(markup).toContain('fill="currentColor"');
+    expect(markup).not.toContain("#ffffff");
+  });
+
   it("uses the reversed Central icon for opencode in dark mode", () => {
     const markup = renderToStaticMarkup(
       <ProviderIcon provider="opencode" className="size-4 text-muted-foreground" />,

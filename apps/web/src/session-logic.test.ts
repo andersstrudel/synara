@@ -860,6 +860,7 @@ describe("PROVIDER_OPTIONS", () => {
     const droid = PROVIDER_OPTIONS.find((option) => option.value === "droid");
     const opencode = PROVIDER_OPTIONS.find((option) => option.value === "opencode");
     const pi = PROVIDER_OPTIONS.find((option) => option.value === "pi");
+    const prime = PROVIDER_OPTIONS.find((option) => option.value === "prime");
     expect(PROVIDER_OPTIONS).toEqual([
       { value: "codex", label: "Codex", available: true },
       { value: "claudeAgent", label: "Claude", available: true },
@@ -870,6 +871,7 @@ describe("PROVIDER_OPTIONS", () => {
       { value: "opencode", label: "OpenCode", available: true },
       { value: "pi", label: "Pi", available: true },
       { value: "devin", label: "Devin", available: true },
+      { value: "prime", label: "Prime", available: true },
     ]);
     expect(claude).toEqual({
       value: "claudeAgent",
@@ -904,6 +906,11 @@ describe("PROVIDER_OPTIONS", () => {
     expect(pi).toEqual({
       value: "pi",
       label: "Pi",
+      available: true,
+    });
+    expect(prime).toEqual({
+      value: "prime",
+      label: "Prime",
       available: true,
     });
   });

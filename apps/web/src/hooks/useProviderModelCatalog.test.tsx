@@ -67,12 +67,15 @@ const SETTINGS = {
   customGrokModels: [],
   customOpenCodeModels: [],
   customPiModels: [],
+  customPrimeModels: [],
   droidBinaryPath: "",
   grokBinaryPath: "",
   hiddenProviders: [],
   openCodeBinaryPath: "",
   piAgentDir: "",
   piBinaryPath: "",
+  primeAgentDir: "",
+  primeBinaryPath: "",
 };
 
 function readCatalogRenders(

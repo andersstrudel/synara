@@ -19,6 +19,7 @@ export const PROVIDER_KINDS: ReadonlyArray<ProviderKind> = [
   "opencode",
   "pi",
   "devin",
+  "prime",
 ];
 
 export const MODEL_SELECTION_INPUT_SCHEMA = {
@@ -133,9 +134,9 @@ export function buildModelSelection(
 ): ModelSelection {
   const effectiveModel =
     model ??
-    (provider === "pi"
+    (provider === "pi" || provider === "prime"
       ? undefined
-      : DEFAULT_MODEL_BY_PROVIDER[provider as Exclude<ProviderKind, "pi">]);
+      : DEFAULT_MODEL_BY_PROVIDER[provider as Exclude<ProviderKind, "pi" | "prime">]);
   if (!effectiveModel) {
     throw new ToolInputError(
       `Provider "${provider}" has no default model; pass an explicit "model" argument.`,

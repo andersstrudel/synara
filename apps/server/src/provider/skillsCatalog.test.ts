@@ -131,6 +131,11 @@ describe("discoverSkillsCatalog", () => {
       "OpenCode",
     );
     await writeSkill(path.join(homeDir, ".pi", "agent", "skills", "pi-only"), "pi-only", "Pi");
+    await writeSkill(
+      path.join(homeDir, ".prime", "agent", "skills", "prime-only"),
+      "prime-only",
+      "Prime",
+    );
 
     const skills = await discoverSkillsCatalog({ homeDir, synaraBaseDir });
     const byName = new Map(skills.map((skill) => [skill.name, skill]));
@@ -145,6 +150,28 @@ describe("discoverSkillsCatalog", () => {
     expect(byName.get("windsurf-only")?.scope).toBe("devin");
     expect(byName.get("opencode-only")?.scope).toBe("opencode");
     expect(byName.get("pi-only")?.scope).toBe("pi");
+    expect(byName.get("prime-only")?.scope).toBe("prime");
+  });
+
+  it("discovers Prime Agent's project-local native skill root", async () => {
+    const cwd = path.join(root, "repo", "packages", "web");
+    await mkdir(cwd, { recursive: true });
+    await writeSkill(
+      path.join(root, "repo", ".prime", "agent", "skills", "prime-project"),
+      "prime-project",
+      "Project Prime skill",
+    );
+
+    const skills = await discoverSkillsCatalog({
+      cwd,
+      homeDir,
+      synaraBaseDir,
+      provider: "prime",
+    });
+
+    expect(skills.find((skill) => skill.name === "prime-project")).toMatchObject({
+      scope: "project",
+    });
   });
 
   it("discovers Devin's project-local native skill roots", async () => {

@@ -440,6 +440,7 @@ describe("resolveAppModelSelection", () => {
           droid: [],
           opencode: [],
           pi: [],
+          prime: [],
         },
         "galapagos-alpha",
       ),
@@ -460,6 +461,7 @@ describe("resolveAppModelSelection", () => {
           droid: [],
           opencode: [],
           pi: [],
+          prime: [],
         },
         "",
       ),
@@ -480,6 +482,7 @@ describe("resolveAppModelSelection", () => {
           droid: [],
           opencode: [],
           pi: [],
+          prime: [],
         },
         "GPT-5.3 Codex",
       ),
@@ -500,6 +503,7 @@ describe("resolveAppModelSelection", () => {
           droid: [],
           opencode: [],
           pi: [],
+          prime: [],
         },
         "sonnet",
       ),
@@ -520,6 +524,7 @@ describe("resolveAppModelSelection", () => {
           droid: [],
           opencode: [],
           pi: [],
+          prime: [],
         },
         "custom/selected-model",
       ),
@@ -635,6 +640,7 @@ describe("normalizeStoredAppSettings", () => {
         droidBinaryPath: "droid",
         openCodeBinaryPath: "opencode",
         piBinaryPath: "pi",
+        primeBinaryPath: "prime-agent",
       }),
     );
     const normalized = normalizeStoredAppSettings(decodedSettings);
@@ -648,6 +654,7 @@ describe("normalizeStoredAppSettings", () => {
       droidBinaryPath: "",
       openCodeBinaryPath: "",
       piBinaryPath: "",
+      primeBinaryPath: "",
     });
     expect(getCustomBinaryPathForProvider(normalized, "opencode")).toBe("");
   });
@@ -678,6 +685,8 @@ describe("getProviderStartOptions", () => {
         openCodeServerUrl: "",
         piAgentDir: "",
         piBinaryPath: "",
+        primeAgentDir: "/Users/you/.prime/agent",
+        primeBinaryPath: "/usr/local/bin/prime-agent",
         devinBinaryPath: "/usr/local/bin/devin",
       }),
     ).toEqual({
@@ -700,6 +709,10 @@ describe("getProviderStartOptions", () => {
       devin: {
         binaryPath: "/usr/local/bin/devin",
       },
+      prime: {
+        agentDir: "/Users/you/.prime/agent",
+        binaryPath: "/usr/local/bin/prime-agent",
+      },
     });
   });
 
@@ -719,6 +732,8 @@ describe("getProviderStartOptions", () => {
         openCodeServerUrl: "",
         piAgentDir: "",
         piBinaryPath: "",
+        primeAgentDir: "",
+        primeBinaryPath: "",
         devinBinaryPath: "",
       }),
     ).toBeUndefined();
@@ -741,6 +756,8 @@ describe("getProviderStartOptions", () => {
         openCodeServerUrl: "",
         piAgentDir: "",
         piBinaryPath: "pi",
+        primeAgentDir: "",
+        primeBinaryPath: "prime-agent",
       }),
     ).toBeUndefined();
   });
@@ -757,6 +774,7 @@ describe("provider-indexed custom model settings", () => {
     customDevinModels: ["devin/custom-model"],
     customOpenCodeModels: ["openrouter/gpt-oss-120b"],
     customPiModels: ["anthropic/custom-pi"],
+    customPrimeModels: ["cerebras/custom-prime"],
   } as const;
 
   it("exports one provider config per provider", () => {
@@ -770,6 +788,7 @@ describe("provider-indexed custom model settings", () => {
       "droid",
       "opencode",
       "pi",
+      "prime",
     ]);
   });
 
@@ -788,6 +807,7 @@ describe("provider-indexed custom model settings", () => {
     expect(getCustomModelsForProvider(settings, "devin")).toEqual(["devin/custom-model"]);
     expect(getCustomModelsForProvider(settings, "opencode")).toEqual(["openrouter/gpt-oss-120b"]);
     expect(getCustomModelsForProvider(settings, "pi")).toEqual(["anthropic/custom-pi"]);
+    expect(getCustomModelsForProvider(settings, "prime")).toEqual(["cerebras/custom-prime"]);
   });
 
   it("reads default custom models for each provider", () => {
@@ -801,6 +821,7 @@ describe("provider-indexed custom model settings", () => {
       customDevinModels: ["adaptive"],
       customOpenCodeModels: ["openai/gpt-5"],
       customPiModels: ["anthropic/default-pi"],
+      customPrimeModels: ["cerebras/default-prime"],
     } as const;
 
     expect(getDefaultCustomModelsForProvider(defaults, "codex")).toEqual(["default/codex-model"]);
@@ -816,6 +837,9 @@ describe("provider-indexed custom model settings", () => {
     expect(getDefaultCustomModelsForProvider(defaults, "devin")).toEqual(["adaptive"]);
     expect(getDefaultCustomModelsForProvider(defaults, "opencode")).toEqual(["openai/gpt-5"]);
     expect(getDefaultCustomModelsForProvider(defaults, "pi")).toEqual(["anthropic/default-pi"]);
+    expect(getDefaultCustomModelsForProvider(defaults, "prime")).toEqual([
+      "cerebras/default-prime",
+    ]);
   });
 
   it("patches custom models for codex", () => {
@@ -872,6 +896,12 @@ describe("provider-indexed custom model settings", () => {
     });
   });
 
+  it("patches custom models for prime", () => {
+    expect(patchCustomModels("prime", ["cerebras/custom-prime"])).toEqual({
+      customPrimeModels: ["cerebras/custom-prime"],
+    });
+  });
+
   it("builds a complete provider-indexed custom model record", () => {
     expect(getCustomModelsByProvider(settings)).toEqual({
       codex: ["custom/codex-model"],
@@ -883,6 +913,7 @@ describe("provider-indexed custom model settings", () => {
       devin: ["devin/custom-model"],
       opencode: ["openrouter/gpt-oss-120b"],
       pi: ["anthropic/custom-pi"],
+      prime: ["cerebras/custom-prime"],
     });
   });
 
@@ -915,6 +946,9 @@ describe("provider-indexed custom model settings", () => {
     expect(modelOptionsByProvider.pi.some((option) => option.slug === "anthropic/custom-pi")).toBe(
       true,
     );
+    expect(
+      modelOptionsByProvider.prime.some((option) => option.slug === "cerebras/custom-prime"),
+    ).toBe(true);
   });
 
   it("normalizes and deduplicates custom model options per provider", () => {
@@ -939,6 +973,11 @@ describe("provider-indexed custom model settings", () => {
         " anthropic/claude-sonnet-4-5 ",
         "anthropic/custom-pi",
         "anthropic/custom-pi",
+      ],
+      customPrimeModels: [
+        " cerebras/qwen-3.8-27b ",
+        "cerebras/custom-prime",
+        "cerebras/custom-prime",
       ],
     });
 
@@ -979,6 +1018,12 @@ describe("provider-indexed custom model settings", () => {
     expect(
       modelOptionsByProvider.pi.filter((option) => option.slug === "anthropic/custom-pi"),
     ).toHaveLength(1);
+    expect(
+      modelOptionsByProvider.prime.filter((option) => option.slug === "cerebras/custom-prime"),
+    ).toHaveLength(1);
+    expect(
+      modelOptionsByProvider.prime.some((option) => option.slug === "cerebras/qwen-3.8-27b"),
+    ).toBe(true);
   });
 });
 

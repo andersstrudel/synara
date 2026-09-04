@@ -973,6 +973,8 @@ function getProviderStartOptionsCustomBinaryPath(
       return normalizeCustomBinaryPath(providerOptions?.devin?.binaryPath);
     case "pi":
       return normalizeCustomBinaryPath(providerOptions?.pi?.binaryPath);
+    case "prime":
+      return normalizeCustomBinaryPath(providerOptions?.prime?.binaryPath);
   }
 }
 
@@ -2366,6 +2368,7 @@ export default function ChatView({
       opencode: resolveHint("opencode"),
       pi: resolveHint("pi"),
       devin: resolveHint("devin"),
+      prime: resolveHint("prime"),
     };
   }, [
     activeProject?.defaultModelSelection,
@@ -2445,7 +2448,10 @@ export default function ChatView({
   const selectedPromptEffort = composerProviderState.promptEffort;
   const selectedModelOptionsForDispatch = composerProviderState.modelOptionsForDispatch;
   const selectedModelSelection = useMemo<ModelSelection>(() => {
-    if (selectedProvider === "pi" && draftModelSelectionForSelectedProvider?.provider === "pi") {
+    if (
+      (selectedProvider === "pi" || selectedProvider === "prime") &&
+      draftModelSelectionForSelectedProvider?.provider === selectedProvider
+    ) {
       return buildModelSelection(
         selectedProvider,
         draftModelSelectionForSelectedProvider.model,
@@ -2489,7 +2495,8 @@ export default function ChatView({
     selectedProvider === "droid" ||
     selectedProvider === "opencode" ||
     selectedProvider === "pi" ||
-    selectedProvider === "devin";
+    selectedProvider === "devin" ||
+    selectedProvider === "prime";
   const showComposerModelBootstrapSkeleton = shouldShowComposerModelBootstrapSkeleton({
     selectedProvider,
     selectedModel,
@@ -3738,7 +3745,9 @@ export default function ChatView({
           ? providerOptionsForDispatch?.opencode?.binaryPath
           : selectedProvider === "devin"
             ? providerOptionsForDispatch?.devin?.binaryPath
-            : null) ?? null,
+            : selectedProvider === "prime"
+              ? providerOptionsForDispatch?.prime?.binaryPath
+              : null) ?? null,
       serverUrl:
         (selectedProvider === "opencode"
           ? providerOptionsForDispatch?.opencode?.serverUrl
@@ -3747,7 +3756,12 @@ export default function ChatView({
         selectedProvider === "opencode"
           ? providerOptionsForDispatch?.opencode?.experimentalWebSockets
           : undefined,
-      agentDir: selectedProvider === "pi" ? settings.piAgentDir || null : null,
+      agentDir:
+        selectedProvider === "pi"
+          ? settings.piAgentDir || null
+          : selectedProvider === "prime"
+            ? settings.primeAgentDir || null
+            : null,
       enabled:
         (composerTriggerKind === "slash-command" || composerTriggerKind === "slash-model") &&
         supportsNativeSlashCommandDiscovery(providerComposerCapabilitiesQuery.data) &&
@@ -3755,15 +3769,25 @@ export default function ChatView({
     }),
   );
   const canDiscoverProviderSkills =
-    selectedProvider === "pi" || supportsSkillDiscovery(providerComposerCapabilitiesQuery.data);
+    selectedProvider === "pi" ||
+    selectedProvider === "prime" ||
+    supportsSkillDiscovery(providerComposerCapabilitiesQuery.data);
   const providerSkillsQuery = useQuery(
     providerSkillsQueryOptions({
       provider: selectedProvider,
       cwd: composerSkillCwd,
       threadId,
-      agentDir: selectedProvider === "pi" ? settings.piAgentDir || null : null,
+      agentDir:
+        selectedProvider === "pi"
+          ? settings.piAgentDir || null
+          : selectedProvider === "prime"
+            ? settings.primeAgentDir || null
+            : null,
       enabled:
-        (isSkillTrigger || composerTriggerKind === "slash-command" || selectedProvider === "pi") &&
+        (isSkillTrigger ||
+          composerTriggerKind === "slash-command" ||
+          selectedProvider === "pi" ||
+          selectedProvider === "prime") &&
         canDiscoverProviderSkills &&
         composerSkillCwd !== null,
     }),

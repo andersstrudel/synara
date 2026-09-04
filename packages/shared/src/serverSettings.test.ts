@@ -50,6 +50,11 @@ describe("providerStartOptionsFromServerSettings", () => {
           ...DEFAULT_SERVER_SETTINGS.providers.devin,
           binaryPath: "",
         },
+        prime: {
+          ...DEFAULT_SERVER_SETTINGS.providers.prime,
+          binaryPath: "",
+          agentDir: "",
+        },
       },
     };
 
@@ -93,6 +98,11 @@ describe("providerStartOptionsFromServerSettings", () => {
         devin: {
           ...DEFAULT_SERVER_SETTINGS.providers.devin,
           binaryPath: "/custom/bin/devin",
+        },
+        prime: {
+          ...DEFAULT_SERVER_SETTINGS.providers.prime,
+          binaryPath: "/custom/bin/prime-agent",
+          agentDir: "/custom/prime-home",
         },
       },
     };

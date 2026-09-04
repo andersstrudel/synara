@@ -26,6 +26,7 @@ import {
   checkGrokProviderStatus,
   checkOpenCodeProviderStatus,
   checkPiProviderStatus,
+  checkPrimeProviderStatus,
   hasCustomModelProvider,
   makeDisabledProviderStatus,
   makeCheckClaudeProviderStatus,
@@ -34,6 +35,7 @@ import {
   makeCheckDevinProviderStatus,
   makeCheckGrokProviderStatus,
   makeCheckOpenCodeProviderStatus,
+  makeCheckPrimeProviderStatus,
   makeProviderHealthLive,
   parseAuthStatusFromOutput,
   parseClaudeAuthStatusFromOutput,
@@ -163,6 +165,7 @@ const allProvidersDisabledSettings = {
     droid: { enabled: false },
     opencode: { enabled: false },
     pi: { enabled: false },
+    prime: { enabled: false },
   },
 } as const;
 
@@ -178,6 +181,7 @@ const allProvidersDisabledServerSettings = {
     droid: { ...DEFAULT_SERVER_SETTINGS.providers.droid, enabled: false },
     opencode: { ...DEFAULT_SERVER_SETTINGS.providers.opencode, enabled: false },
     pi: { ...DEFAULT_SERVER_SETTINGS.providers.pi, enabled: false },
+    prime: { ...DEFAULT_SERVER_SETTINGS.providers.prime, enabled: false },
   },
 } satisfies typeof DEFAULT_SERVER_SETTINGS;
 
@@ -503,7 +507,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
       );
       const codex = statuses.find((status) => status.provider === "codex");
 
-      assert.strictEqual(statuses.length, 9);
+      assert.strictEqual(statuses.length, 10);
       assert.strictEqual(codex?.available, false);
       assert.strictEqual(codex?.message, "Provider is disabled in Synara settings.");
     });
@@ -638,7 +642,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
         const providerHealth = yield* ProviderHealth;
         const statuses = yield* providerHealth.refresh;
 
-        assert.strictEqual(statuses.length, 9);
+        assert.strictEqual(statuses.length, 10);
         for (const status of statuses) {
           assert.strictEqual(status.available, false);
           assert.strictEqual(status.message, "Provider is disabled in Synara settings.");
@@ -2406,6 +2410,95 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
             assert.strictEqual(command, "/custom/bin/devin");
             const joined = args.join(" ");
             if (joined === "--version") return { stdout: "devin 2.1.0\n", stderr: "", code: 0 };
+            throw new Error(`Unexpected args: ${joined}`);
+          }),
+        ),
+      ),
+    );
+  });
+
+  describe("checkPrimeProviderStatus", () => {
+    it.effect("returns ready and authenticated when auth.json holds provider credentials", () =>
+      Effect.gen(function* () {
+        const status = yield* makeCheckPrimeProviderStatus(
+          undefined,
+          "/prime/agent",
+          async (agentDir) => {
+            assert.strictEqual(agentDir, "/prime/agent");
+            return ["anthropic", "openai-codex", "cerebras", "groq"];
+          },
+        );
+        assert.strictEqual(status.provider, "prime");
+        assert.strictEqual(status.status, "ready");
+        assert.strictEqual(status.available, true);
+        assert.strictEqual(status.authStatus, "authenticated");
+        assert.strictEqual(status.authType, "prime");
+        assert.strictEqual(
+          status.authLabel,
+          "prime-agent login · Anthropic, OpenAI, Cerebras, Groq",
+        );
+        assert.strictEqual(status.version, "0.9.1");
+        assert.strictEqual(status.message, undefined);
+      }).pipe(
+        Effect.provide(
+          mockSpawnerLayer((args, command) => {
+            assert.strictEqual(command, "prime-agent");
+            const joined = args.join(" ");
+            if (joined === "--version") return { stdout: "0.9.1\n", stderr: "", code: 0 };
+            throw new Error(`Unexpected args: ${joined}`);
+          }),
+        ),
+      ),
+    );
+
+    it.effect("returns ready with login guidance when auth.json has no providers", () =>
+      Effect.gen(function* () {
+        const status = yield* makeCheckPrimeProviderStatus(undefined, undefined, async () => []);
+        assert.strictEqual(status.status, "ready");
+        assert.strictEqual(status.available, true);
+        assert.strictEqual(status.authStatus, "unknown");
+        assert.strictEqual(status.authType, undefined);
+        assert.strictEqual(status.message, "Run `prime-agent` and use /login to add a provider.");
+      }).pipe(
+        Effect.provide(
+          mockSpawnerLayer((args) => {
+            const joined = args.join(" ");
+            if (joined === "--version") return { stdout: "0.9.1\n", stderr: "", code: 0 };
+            throw new Error(`Unexpected args: ${joined}`);
+          }),
+        ),
+      ),
+    );
+
+    it.effect("returns unavailable when the Prime Agent CLI is missing", () =>
+      Effect.gen(function* () {
+        const status = yield* checkPrimeProviderStatus;
+        assert.strictEqual(status.provider, "prime");
+        assert.strictEqual(status.status, "error");
+        assert.strictEqual(status.available, false);
+        assert.strictEqual(status.authStatus, "unknown");
+        assert.strictEqual(
+          status.message,
+          "Prime Agent CLI (`prime-agent`) is not installed or not on PATH.",
+        );
+      }).pipe(Effect.provide(failingSpawnerLayer("spawn prime-agent ENOENT"))),
+    );
+
+    it.effect("uses the configured Prime Agent binary for the version probe", () =>
+      Effect.gen(function* () {
+        const status = yield* makeCheckPrimeProviderStatus(
+          "/custom/bin/prime-agent",
+          undefined,
+          async () => ["anthropic"],
+        );
+        assert.strictEqual(status.status, "ready");
+        assert.strictEqual(status.authLabel, "prime-agent login · Anthropic");
+      }).pipe(
+        Effect.provide(
+          mockSpawnerLayer((args, command) => {
+            assert.strictEqual(command, "/custom/bin/prime-agent");
+            const joined = args.join(" ");
+            if (joined === "--version") return { stdout: "0.10.0\n", stderr: "", code: 0 };
             throw new Error(`Unexpected args: ${joined}`);
           }),
         ),

@@ -20,6 +20,7 @@ import {
   OpenAI,
   OpenCodeIcon,
   PiIcon,
+  PrimeIcon,
 } from "./Icons";
 
 export type ProviderIconTone = "default" | "header";
@@ -73,6 +74,7 @@ export const PROVIDER_ICON_COMPONENT_BY_PROVIDER: Record<ProviderKind, Icon> = {
   droid: DroidIcon,
   opencode: OpenCodeProviderIcon,
   pi: PiIcon,
+  prime: PrimeIcon,
 };
 
 export function providerIconToneClassName(

@@ -86,7 +86,7 @@ describe("buildProviderChildEnvironment", () => {
     },
   );
 
-  it.each(["claude", "cursor", "droid", "antigravity", "grok"] as const)(
+  it.each(["claude", "cursor", "droid", "antigravity", "grok", "prime"] as const)(
     "does not leak OpenAI credentials into restricted %s children",
     (provider) => {
       const env = buildProviderChildEnvironment({

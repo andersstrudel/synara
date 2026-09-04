@@ -65,6 +65,10 @@ export function shouldInlineSkillForProvider(provider: ProviderKind, skillPath: 
       // Pi loads its own skill set; anything resolved from a cross-provider
       // folder is portable and must be inlined.
       return CROSS_PROVIDER_SKILL_DIR_NAMES.some((dir) => segments.has(dir));
+    case "prime":
+      // Prime Agent loads `.prime/agent/skills` and `.agents/skills` natively;
+      // every other folder is portable and must be inlined.
+      return !(segments.has(".prime") || segments.has(".agents"));
     default:
       // Antigravity/Grok/Droid/OpenCode have no native skill support.
       return true;

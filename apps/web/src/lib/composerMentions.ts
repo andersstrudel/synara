@@ -6,8 +6,9 @@
 import type { ProviderMentionReference, ProviderSkillReference } from "@synara/contracts";
 import { isThreadMentionPath, threadIdFromThreadMentionPath } from "@synara/shared/threadMentions";
 
+// Pi and Prime Agent address skills through an explicit `/skill:` slash command.
 export function skillMentionPrefix(provider: string): string {
-  return provider === "pi" ? "/skill:" : "/";
+  return provider === "pi" || provider === "prime" ? "/skill:" : "/";
 }
 
 // The alternation must be unambiguous — a backslash may only match the escape
@@ -80,7 +81,9 @@ export function promptIncludesSkillMention(
 ): boolean {
   const escapedSkillName = escapeRegExp(skillName);
   const prefixes =
-    provider === "pi" ? [skillMentionPrefix(provider)] : [skillMentionPrefix(provider), "$"];
+    provider === "pi" || provider === "prime"
+      ? [skillMentionPrefix(provider)]
+      : [skillMentionPrefix(provider), "$"];
   return prefixes.some((prefix) => {
     const pattern = new RegExp(`(^|\\s)${escapeRegExp(prefix)}${escapedSkillName}(?=\\s|$)`, "i");
     return pattern.test(prompt);

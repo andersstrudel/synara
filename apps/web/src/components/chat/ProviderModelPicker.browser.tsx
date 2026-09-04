@@ -63,6 +63,14 @@ const MODEL_OPTIONS_BY_PROVIDER = {
       upstreamProviderName: "Anthropic",
     },
   ],
+  prime: [
+    {
+      slug: "cerebras/qwen-3.8-27b",
+      name: "Qwen 3.8 27B",
+      upstreamProviderId: "cerebras",
+      upstreamProviderName: "Cerebras",
+    },
+  ],
   antigravity: [
     {
       slug: "Gemini 3.5 Flash",
@@ -140,6 +148,21 @@ const PI_FAVORITE_SORT_MODELS = [
   {
     slug: "openai/gpt-pi-favorite-sort" as ModelSlug,
     name: "GPT Pi Favorite Sort",
+    upstreamProviderId: "openai",
+    upstreamProviderName: "OpenAI",
+  },
+] satisfies ReadonlyArray<ProviderModelOption & { slug: ModelSlug }>;
+
+const PRIME_FAVORITE_SORT_MODELS = [
+  {
+    slug: "anthropic/claude-prime-favorite-sort" as ModelSlug,
+    name: "Claude Prime Favorite Sort",
+    upstreamProviderId: "anthropic",
+    upstreamProviderName: "Anthropic",
+  },
+  {
+    slug: "openai/gpt-prime-favorite-sort" as ModelSlug,
+    name: "GPT Prime Favorite Sort",
     upstreamProviderId: "openai",
     upstreamProviderName: "OpenAI",
   },
@@ -586,6 +609,46 @@ describe("ProviderModelPicker", () => {
       expect(
         Array.from(document.querySelectorAll('[role="menuitemradio"]')).filter((element) =>
           element.textContent?.includes("GPT Pi Favorite Sort"),
+        ),
+      ).toHaveLength(1);
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("shows favourited Prime models in their own top category", async () => {
+    const mounted = await mountPicker({
+      provider: "prime",
+      model: "anthropic/claude-prime-favorite-sort",
+      lockedProvider: "prime",
+      modelOptionsByProvider: {
+        ...MODEL_OPTIONS_BY_PROVIDER,
+        prime: PRIME_FAVORITE_SORT_MODELS,
+      },
+    });
+
+    try {
+      await page.getByRole("button").click();
+
+      await vi.waitFor(() => {
+        const text = document.body.textContent ?? "";
+        expect(text.indexOf("Anthropic")).toBeLessThan(text.indexOf("OpenAI"));
+      });
+
+      await page.getByRole("button", { name: "Add GPT Prime Favorite Sort to favourites" }).click();
+
+      await vi.waitFor(() => {
+        const text = document.body.textContent ?? "";
+        expect(text.indexOf("Favourites")).toBeLessThan(text.indexOf("Anthropic"));
+        expect(text.indexOf("GPT Prime Favorite Sort")).toBeGreaterThan(text.indexOf("Favourites"));
+        expect(text.indexOf("GPT Prime Favorite Sort")).toBeLessThan(text.indexOf("Anthropic"));
+      });
+      await expect
+        .element(page.getByRole("menuitemradio", { name: "GPT Prime Favorite Sort — OpenAI" }))
+        .toBeInTheDocument();
+      expect(
+        Array.from(document.querySelectorAll('[role="menuitemradio"]')).filter((element) =>
+          element.textContent?.includes("GPT Prime Favorite Sort"),
         ),
       ).toHaveLength(1);
     } finally {

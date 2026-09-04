@@ -14,7 +14,8 @@ type ModelProviderKind =
   | "droid"
   | "opencode"
   | "pi"
-  | "devin";
+  | "devin"
+  | "prime";
 
 const NON_DROID_MODEL_SLUGS = new Set(
   Object.entries(MODEL_OPTIONS_BY_PROVIDER).flatMap(([provider, models]) =>
@@ -48,6 +49,9 @@ function readTrimmedString(record: Record<string, unknown>, key: string): string
 // Imported instance ids may be runtime names rather than Synara provider literals.
 function inferProviderFromLabel(label: string): ModelProviderKind | undefined {
   const lowerLabel = label.toLowerCase();
+  if (lowerLabel.includes("prime")) {
+    return "prime";
+  }
   if (/(^|[^a-z0-9])pi([^a-z0-9]|$)/u.test(lowerLabel)) {
     return "pi";
   }
@@ -103,7 +107,8 @@ function inferLegacyModelProvider(provider: unknown, model: string): ModelProvid
     provider === "droid" ||
     provider === "opencode" ||
     provider === "pi" ||
-    provider === "devin"
+    provider === "devin" ||
+    provider === "prime"
   ) {
     return provider;
   }
@@ -136,6 +141,9 @@ function inferLegacyModelProvider(provider: unknown, model: string): ModelProvid
   }
   if (lowerModel.includes("devin")) {
     return "devin";
+  }
+  if (lowerModel.includes("prime")) {
+    return "prime";
   }
   return "codex";
 }

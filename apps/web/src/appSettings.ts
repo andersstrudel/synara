@@ -139,7 +139,8 @@ type CustomModelSettingsKey =
   | "customDroidModels"
   | "customDevinModels"
   | "customOpenCodeModels"
-  | "customPiModels";
+  | "customPiModels"
+  | "customPrimeModels";
 export type ProviderCustomModelConfig = {
   provider: ProviderKind;
   settingsKey: CustomModelSettingsKey;
@@ -160,6 +161,7 @@ const BUILT_IN_MODEL_SLUGS_BY_PROVIDER: Record<ProviderKind, ReadonlySet<string>
   droid: new Set(getModelOptions("droid").map((option) => option.slug)),
   opencode: new Set(getModelOptions("opencode").map((option) => option.slug)),
   pi: new Set(getModelOptions("pi").map((option) => option.slug)),
+  prime: new Set(getModelOptions("prime").map((option) => option.slug)),
 };
 
 const withDefaults =
@@ -187,6 +189,7 @@ const PersistedProviderKind = Schema.Literals([
   "kilo",
   "opencode",
   "pi",
+  "prime",
 ]).pipe(
   Schema.decodeTo(
     ProviderKind,
@@ -275,6 +278,8 @@ export const AppSettingsSchema = Schema.Struct({
   openCodeBinaryPath: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
   piBinaryPath: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
   piAgentDir: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
+  primeBinaryPath: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
+  primeAgentDir: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
   openCodeServerUrl: Schema.String.check(Schema.isMaxLength(4096)).pipe(withDefaults(() => "")),
   openCodeServerPassword: Schema.String.check(Schema.isMaxLength(4096)).pipe(
     withDefaults(() => ""),
@@ -359,6 +364,7 @@ export const AppSettingsSchema = Schema.Struct({
   customDroidModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
   customOpenCodeModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
   customPiModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
+  customPrimeModels: Schema.Array(Schema.String).pipe(withDefaults(() => [])),
   textGenerationProvider: PersistedProviderKind.pipe(withDefaults(() => "codex" as const)),
   textGenerationModel: Schema.optional(TrimmedNonEmptyString),
   uiFontFamily: Schema.String.check(Schema.isMaxLength(256)).pipe(withDefaults(() => "")),
@@ -492,6 +498,15 @@ const PROVIDER_CUSTOM_MODEL_CONFIG: Record<ProviderKind, ProviderCustomModelConf
     placeholder: "provider/model",
     example: "anthropic/claude-sonnet-4-5",
   },
+  prime: {
+    provider: "prime",
+    settingsKey: "customPrimeModels",
+    defaultSettingsKey: "customPrimeModels",
+    title: "Prime",
+    description: "Save additional Prime model slugs for the picker and provider runtime.",
+    placeholder: "provider/model",
+    example: "cerebras/qwen-3.8-27b",
+  },
 };
 
 export const MODEL_PROVIDER_SETTINGS = Object.values(PROVIDER_CUSTOM_MODEL_CONFIG);
@@ -623,6 +638,7 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
       settings.openCodeBinaryPath,
     ),
     piBinaryPath: normalizeProviderBinaryPathOverride("pi", settings.piBinaryPath),
+    primeBinaryPath: normalizeProviderBinaryPathOverride("prime", settings.primeBinaryPath),
     uiDensity: normalizeUiDensityValue(settings.uiDensity),
     chatWidth: normalizeChatWidthModeValue(settings.chatWidth),
     chatFontSizePx: normalizeChatFontSizePx(settings.chatFontSizePx),
@@ -640,6 +656,7 @@ function normalizeAppSettings(settings: AppSettings): AppSettings {
     customDroidModels: normalizeCustomModelSlugs(settings.customDroidModels, "droid"),
     customOpenCodeModels: normalizeCustomModelSlugs(settings.customOpenCodeModels, "opencode"),
     customPiModels: normalizeCustomModelSlugs(settings.customPiModels, "pi"),
+    customPrimeModels: normalizeCustomModelSlugs(settings.customPrimeModels, "prime"),
     hiddenProviders: normalizeHiddenProviders(settings.hiddenProviders),
     disabledProviders: normalizeHiddenProviders(settings.disabledProviders),
     providerOrder: normalizeProviderOrder(settings.providerOrder),
@@ -687,6 +704,8 @@ function serverSettingsToAppSettings(settings: ServerSettingsView): Partial<AppS
     openCodeServerUrl: settings.providers.opencode.serverUrl,
     piAgentDir: settings.providers.pi.agentDir,
     piBinaryPath: settings.providers.pi.binaryPath,
+    primeAgentDir: settings.providers.prime.agentDir,
+    primeBinaryPath: settings.providers.prime.binaryPath,
     customCodexModels: settings.providers.codex.customModels,
     customClaudeModels: settings.providers.claudeAgent.customModels,
     customCursorModels: settings.providers.cursor.customModels,
@@ -696,6 +715,7 @@ function serverSettingsToAppSettings(settings: ServerSettingsView): Partial<AppS
     customDroidModels: settings.providers.droid.customModels,
     customOpenCodeModels: settings.providers.opencode.customModels,
     customPiModels: settings.providers.pi.customModels,
+    customPrimeModels: settings.providers.prime.customModels,
     disabledProviders: getServerDisabledProviders(settings),
     textGenerationProvider: settings.textGenerationModelSelection.provider,
     textGenerationModel: settings.textGenerationModelSelection.model,
@@ -725,6 +745,8 @@ function touchesProviderDiscoverySettings(patch: Partial<AppSettings>): boolean 
     hasOwn(patch, "openCodeServerPassword") ||
     hasOwn(patch, "openCodeServerUrl") ||
     hasOwn(patch, "piAgentDir") ||
+    hasOwn(patch, "primeAgentDir") ||
+    hasOwn(patch, "primeBinaryPath") ||
     hasOwn(patch, "disabledProviders")
   );
 }
@@ -889,6 +911,19 @@ export function appSettingsPatchToServerSettingsPatch(
       ...(hasOwn(patch, "customPiModels") ? { customModels: patch.customPiModels ?? [] } : {}),
     };
   }
+  if (
+    hasOwn(patch, "primeAgentDir") ||
+    hasOwn(patch, "primeBinaryPath") ||
+    hasOwn(patch, "customPrimeModels")
+  ) {
+    providers.prime = {
+      ...(hasOwn(patch, "primeAgentDir") ? { agentDir: patch.primeAgentDir ?? "" } : {}),
+      ...(hasOwn(patch, "primeBinaryPath") ? { binaryPath: patch.primeBinaryPath ?? "" } : {}),
+      ...(hasOwn(patch, "customPrimeModels")
+        ? { customModels: patch.customPrimeModels ?? [] }
+        : {}),
+    };
+  }
   if (hasOwn(patch, "disabledProviders")) {
     const disabledProviders = new Set(normalizeHiddenProviders(patch.disabledProviders ?? []));
     for (const provider of DEFAULT_PROVIDER_ORDER) {
@@ -941,6 +976,8 @@ function buildInitialServerSettingsMigrationPatch(settings: AppSettings): Server
     "openCodeServerUrl",
     "piAgentDir",
     "piBinaryPath",
+    "primeAgentDir",
+    "primeBinaryPath",
     "textGenerationModel",
     "textGenerationProvider",
   ] as const) {
@@ -965,6 +1002,7 @@ function buildInitialServerSettingsMigrationPatch(settings: AppSettings): Server
     "customDroidModels",
     "customOpenCodeModels",
     "customPiModels",
+    "customPrimeModels",
   ] as const) {
     if (normalizedSettings[key].length > 0) {
       patch[key] = normalizedSettings[key] as never;
@@ -1033,6 +1071,7 @@ export function getCustomModelsByProvider(
     droid: getCustomModelsForProvider(settings, "droid"),
     opencode: getCustomModelsForProvider(settings, "opencode"),
     pi: getCustomModelsForProvider(settings, "pi"),
+    prime: getCustomModelsForProvider(settings, "prime"),
   };
 }
 
@@ -1167,6 +1206,7 @@ export function getCustomModelOptionsByProvider(
     droid: getAppModelOptions("droid", customModelsByProvider.droid),
     opencode: getAppModelOptions("opencode", customModelsByProvider.opencode),
     pi: getAppModelOptions("pi", customModelsByProvider.pi),
+    prime: getAppModelOptions("prime", customModelsByProvider.prime),
   };
 }
 
@@ -1187,6 +1227,8 @@ export function getProviderStartOptions(
     | "openCodeServerUrl"
     | "piAgentDir"
     | "piBinaryPath"
+    | "primeAgentDir"
+    | "primeBinaryPath"
   >,
 ): ProviderStartOptions | undefined {
   const claudeBinaryPath = normalizeProviderBinaryPathOverride(
@@ -1207,6 +1249,7 @@ export function getProviderStartOptions(
     settings.openCodeBinaryPath,
   );
   const piBinaryPath = normalizeProviderBinaryPathOverride("pi", settings.piBinaryPath);
+  const primeBinaryPath = normalizeProviderBinaryPathOverride("prime", settings.primeBinaryPath);
   const hasOpenCodeStartOptions = Boolean(
     openCodeBinaryPath || settings.openCodeExperimentalWebSockets || settings.openCodeServerUrl,
   );
@@ -1279,6 +1322,14 @@ export function getProviderStartOptions(
           },
         }
       : {}),
+    ...(primeBinaryPath || settings.primeAgentDir
+      ? {
+          prime: {
+            ...(primeBinaryPath ? { binaryPath: primeBinaryPath } : {}),
+            ...(settings.primeAgentDir ? { agentDir: settings.primeAgentDir } : {}),
+          },
+        }
+      : {}),
   };
 
   return Object.keys(providerOptions).length > 0 ? providerOptions : undefined;
@@ -1324,6 +1375,7 @@ export function getCustomBinaryPathForProvider(
     | "droidBinaryPath"
     | "openCodeBinaryPath"
     | "piBinaryPath"
+    | "primeBinaryPath"
   >,
   provider: ProviderKind,
 ): string {
@@ -1346,6 +1398,8 @@ export function getCustomBinaryPathForProvider(
       return normalizeProviderBinaryPathOverride(provider, settings.openCodeBinaryPath);
     case "pi":
       return normalizeProviderBinaryPathOverride(provider, settings.piBinaryPath);
+    case "prime":
+      return normalizeProviderBinaryPathOverride(provider, settings.primeBinaryPath);
   }
 }
 

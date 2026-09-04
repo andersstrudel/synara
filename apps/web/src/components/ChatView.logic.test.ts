@@ -2957,6 +2957,24 @@ describe("resolveDraftFallbackModelSelection", () => {
     ).toEqual({ provider: "codex", model: "gpt-5.5" });
   });
 
+  it("uses the project default provider when the settings default is prime", () => {
+    expect(
+      resolveDraftFallbackModelSelection({
+        projectDefault: { provider: "claudeAgent", model: "claude-sonnet-5" },
+        settingsDefaultProvider: "prime",
+      }),
+    ).toEqual({ provider: "claudeAgent", model: "claude-sonnet-5" });
+  });
+
+  it("falls back to codex when the settings default is prime and no project default exists", () => {
+    expect(
+      resolveDraftFallbackModelSelection({
+        projectDefault: null,
+        settingsDefaultProvider: "prime",
+      }),
+    ).toEqual({ provider: "codex", model: "gpt-5.5" });
+  });
+
   it("uses the settings provider default model when no project default exists", () => {
     expect(
       resolveDraftFallbackModelSelection({

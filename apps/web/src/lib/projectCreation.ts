@@ -42,7 +42,7 @@ export async function createOrRecoverProjectFromPath(input: {
   spaceId?: SpaceId | null;
   /** Persisted default provider (settings.defaultProvider) that seeds the new
    * project's default model selection. Defaults to codex when omitted, and pi
-   * falls back to codex because it has no default model slug. */
+   * or prime falls back to codex because neither has a default model slug. */
   defaultProvider?: ProviderKind;
   loadSnapshot: () => Promise<OrchestrationShellSnapshot | null>;
   maxAttempts?: number;
@@ -64,7 +64,9 @@ export async function createOrRecoverProjectFromPath(input: {
   const createdAt = new Date().toISOString();
   const title = buildProjectTitleFromWorkspaceRoot(workspaceRoot);
   const seedProvider =
-    input.defaultProvider === "pi" ? "codex" : (input.defaultProvider ?? "codex");
+    input.defaultProvider === "pi" || input.defaultProvider === "prime"
+      ? "codex"
+      : (input.defaultProvider ?? "codex");
 
   try {
     await input.api.orchestration.dispatchCommand({

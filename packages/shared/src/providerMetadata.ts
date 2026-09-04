@@ -121,6 +121,15 @@ export const PROVIDER_DESCRIPTORS = defineProviderDescriptors([
       learnMoreHref: "https://app.devin.ai/usage",
     },
   },
+  {
+    kind: "prime",
+    displayName: PROVIDER_DISPLAY_NAMES.prime,
+    available: true,
+    supportsNativeTurnSteering: false,
+    // Prime Agent brokers many upstream providers (Anthropic, OpenAI, Cerebras, ...);
+    // there is no single account-usage endpoint to surface, so no usage card.
+    usage: null,
+  },
 ] as const satisfies readonly ProviderDescriptor[]);
 
 export const PROVIDER_DESCRIPTOR_BY_KIND = Object.fromEntries(

@@ -75,6 +75,7 @@ function serverSettings(overrides: Partial<ServerSettings["providers"]> = {}): S
         experimentalWebSockets: false,
       },
       pi: { ...provider, binaryPath: "pi", agentDir: "" },
+      prime: { ...provider, binaryPath: "prime-agent", agentDir: "" },
       ...overrides,
     },
     skills: { disabled: [] },

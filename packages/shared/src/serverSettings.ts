@@ -28,6 +28,7 @@ export function applyServerSettingsPatch(
     selectionPatch.model ??
     (selectionPatch.provider &&
     selectionPatch.provider !== "pi" &&
+    selectionPatch.provider !== "prime" &&
     selectionPatch.provider !== current.textGenerationModelSelection.provider
       ? DEFAULT_MODEL_BY_PROVIDER[selectionPatch.provider]
       : current.textGenerationModelSelection.model);
@@ -82,6 +83,10 @@ export function providerStartOptionsFromServerSettings(
     },
     devin: {
       ...(providers.devin.binaryPath ? { binaryPath: providers.devin.binaryPath } : {}),
+    },
+    prime: {
+      ...(providers.prime.binaryPath ? { binaryPath: providers.prime.binaryPath } : {}),
+      ...(providers.prime.agentDir ? { agentDir: providers.prime.agentDir } : {}),
     },
   };
 }

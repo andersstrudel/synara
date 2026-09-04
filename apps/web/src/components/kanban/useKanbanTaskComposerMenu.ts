@@ -58,6 +58,7 @@ interface UseKanbanTaskComposerMenuInput {
   readonly hiddenProviders: readonly ProviderKind[];
   readonly providerOrder: readonly ProviderKind[];
   readonly piAgentDir: string | null;
+  readonly primeAgentDir: string | null;
   readonly handleProviderModelChange: (provider: ProviderKind, model: ModelSlug) => void;
   readonly setInteractionMode: Dispatch<SetStateAction<ProviderInteractionMode>>;
   readonly onCreate: () => void;
@@ -84,6 +85,7 @@ export function useKanbanTaskComposerMenu(input: UseKanbanTaskComposerMenuInput)
     hiddenProviders,
     providerOrder,
     piAgentDir,
+    primeAgentDir,
     handleProviderModelChange,
     setInteractionMode,
     onCreate,
@@ -121,6 +123,7 @@ export function useKanbanTaskComposerMenu(input: UseKanbanTaskComposerMenuInput)
     hiddenProviders,
     providerOrder,
     piAgentDir,
+    primeAgentDir,
   });
   const activeComposerMenuItem =
     composerMenuItems.find((item) => item.id === composerHighlightedItemId) ??

@@ -20,6 +20,8 @@ const codexSkillPath = "/Users/me/.codex/skills/reviewer/SKILL.md";
 const claudeSkillPath = "/Users/me/.claude/skills/reviewer/SKILL.md";
 const cursorSkillPath = "/Users/me/.cursor/skills/reviewer/SKILL.md";
 const piSkillPath = "/Users/me/.pi/agent/skills/reviewer/SKILL.md";
+const primeSkillPath = "/Users/me/.prime/agent/skills/reviewer/SKILL.md";
+const primeProjectSkillPath = "/repo/.prime/agent/skills/reviewer/SKILL.md";
 const devinSkillPath = "/Users/me/.config/devin/skills/reviewer/SKILL.md";
 const cognitionSkillPath = "/Users/me/.config/cognition/skills/reviewer/SKILL.md";
 const agentsSkillPath = "/Users/me/.agents/skills/reviewer/SKILL.md";
@@ -68,6 +70,15 @@ describe("shouldInlineSkillForProvider", () => {
     }
     for (const foreignPath of [synaraSkillPath, codexSkillPath, cursorSkillPath, piSkillPath]) {
       expect(shouldInlineSkillForProvider("devin", foreignPath)).toBe(true);
+    }
+  });
+
+  it("skips Prime-native and .agents roots for prime but inlines every other root", () => {
+    for (const nativePath of [primeSkillPath, primeProjectSkillPath, agentsSkillPath]) {
+      expect(shouldInlineSkillForProvider("prime", nativePath)).toBe(false);
+    }
+    for (const foreignPath of [synaraSkillPath, claudeSkillPath, codexSkillPath, piSkillPath]) {
+      expect(shouldInlineSkillForProvider("prime", foreignPath)).toBe(true);
     }
   });
 

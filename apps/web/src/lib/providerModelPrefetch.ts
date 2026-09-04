@@ -32,6 +32,8 @@ export type ProviderModelPrefetchSettings = Pick<
   | "openCodeBinaryPath"
   | "piBinaryPath"
   | "piAgentDir"
+  | "primeBinaryPath"
+  | "primeAgentDir"
 >;
 
 /**
@@ -49,6 +51,7 @@ export const NEW_THREAD_MODEL_PREFETCH_PROVIDERS: ReadonlyArray<Exclude<Provider
   "opencode",
   "pi",
   "devin",
+  "prime",
 ];
 
 /** Warm results stay fresh for 30 minutes instead of the interactive 60s. */
@@ -166,6 +169,13 @@ export function providerModelsPrefetchQueryOptions(input: {
         provider: "pi",
         binaryPath: settings.piBinaryPath || null,
         agentDir: settings.piAgentDir || null,
+        cwd,
+      });
+    case "prime":
+      return providerModelsQueryOptions({
+        provider: "prime",
+        binaryPath: settings.primeBinaryPath || null,
+        agentDir: settings.primeAgentDir || null,
         cwd,
       });
   }

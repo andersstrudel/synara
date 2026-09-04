@@ -71,6 +71,13 @@ import {
   resolveDevinBinaryPath,
 } from "../acp/DevinAcpSupport";
 import {
+  formatPrimeUpstreamProviderName,
+  PRIME_LOGIN_GUIDANCE,
+  readPrimeAuthProviders,
+  resolvePrimeAgentDir,
+  resolvePrimeBinaryPath,
+} from "../acp/PrimeAcpSupport";
+import {
   claudeAuthMetadata,
   isStructuredClaudeAuthFalseNegativeCandidate,
   parseClaudeAuthStatusFromOutput,
@@ -125,6 +132,7 @@ const DROID_PROVIDER = "droid" as const;
 const DEVIN_PROVIDER = "devin" as const;
 const OPENCODE_PROVIDER = "opencode" as const;
 const PI_PROVIDER = "pi" as const;
+const PRIME_PROVIDER = "prime" as const;
 type ProviderStatuses = ReadonlyArray<ServerProviderStatus>;
 const DISABLED_PROVIDER_STATUS_MESSAGE = "Provider is disabled in Synara settings.";
 const MINIMUM_ANTIGRAVITY_CLI_VERSION = "1.0.12";
@@ -139,6 +147,7 @@ const PROVIDERS = [
   DEVIN_PROVIDER,
   OPENCODE_PROVIDER,
   PI_PROVIDER,
+  PRIME_PROVIDER,
 ] as const satisfies ReadonlyArray<ProviderKind>;
 
 const providerChildKind = (provider: ProviderKind): ProviderChildKind =>
@@ -275,6 +284,18 @@ export const PACKAGE_MANAGED_PROVIDER_UPDATES: Partial<
       executable: "pi",
       args: () => ["update"],
       lockKey: "pi-native",
+      strategy: "always",
+    },
+  },
+  prime: {
+    provider: PRIME_PROVIDER,
+    binaryName: "prime-agent",
+    npmPackageName: "prime-agent",
+    homebrew: null,
+    nativeUpdate: {
+      executable: "prime-agent",
+      args: () => ["update"],
+      lockKey: "prime-native",
       strategy: "always",
     },
   },
@@ -1907,6 +1928,95 @@ export const makeCheckDevinProviderStatus = (
 
 export const checkDevinProviderStatus = makeCheckDevinProviderStatus();
 
+// ── Prime Agent health check ─────────────────────────────────────────
+
+export const makeCheckPrimeProviderStatus = (
+  binaryPath?: string,
+  agentDir?: string,
+  readAuthProviders: typeof readPrimeAuthProviders = readPrimeAuthProviders,
+): Effect.Effect<ServerProviderStatus, never, ChildProcessSpawner.ChildProcessSpawner> =>
+  Effect.gen(function* () {
+    const checkedAt = new Date().toISOString();
+    const executable = resolvePrimeBinaryPath(binaryPath);
+    const env = buildProviderChildEnvironment({ provider: PRIME_PROVIDER });
+
+    const versionProbe = yield* probeProviderCliVersion(
+      runProviderCommand(executable, ["--version"], env),
+      DEFAULT_TIMEOUT_MS,
+    );
+
+    if (versionProbe.outcome === "missing" || versionProbe.outcome === "failure") {
+      const error = versionProbe.cause;
+      return {
+        provider: PRIME_PROVIDER,
+        status: "error" as const,
+        available: false,
+        authStatus: "unknown" as const,
+        checkedAt,
+        message:
+          versionProbe.outcome === "missing"
+            ? "Prime Agent CLI (`prime-agent`) is not installed or not on PATH."
+            : `Failed to execute Prime Agent CLI health check: ${error instanceof Error ? error.message : String(error)}.`,
+      } satisfies ServerProviderStatus;
+    }
+
+    if (versionProbe.outcome === "timeout") {
+      return {
+        provider: PRIME_PROVIDER,
+        status: "error" as const,
+        available: false,
+        authStatus: "unknown" as const,
+        checkedAt,
+        message: "Prime Agent CLI is installed but failed to run. Timed out while running command.",
+      } satisfies ServerProviderStatus;
+    }
+
+    if (versionProbe.outcome === "nonzero") {
+      const versionResult = versionProbe.result;
+      const detail = detailFromResult(versionResult);
+      return {
+        provider: PRIME_PROVIDER,
+        status: "error" as const,
+        available: false,
+        authStatus: "unknown" as const,
+        checkedAt,
+        message: detail
+          ? `Prime Agent CLI is installed but failed to run. ${detail}`
+          : "Prime Agent CLI is installed but failed to run.",
+      } satisfies ServerProviderStatus;
+    }
+
+    const versionResult = versionProbe.result;
+    const parsedVersion = parseGenericCliVersion(
+      `${versionResult.stdout}\n${versionResult.stderr}`,
+    );
+    // Prime keeps upstream credentials in its own store; a non-empty auth.json
+    // (keyed by upstream provider id) means at least one provider is usable.
+    const authProviders = yield* Effect.promise(() =>
+      readAuthProviders(resolvePrimeAgentDir(agentDir)),
+    );
+    const authenticated = authProviders.length > 0;
+
+    return {
+      provider: PRIME_PROVIDER,
+      status: "ready" as const,
+      available: true,
+      authStatus: authenticated ? ("authenticated" as const) : ("unknown" as const),
+      version: parsedVersion,
+      checkedAt,
+      ...(authenticated
+        ? {
+            authType: "prime" as const,
+            authLabel: `prime-agent login · ${authProviders
+              .map(formatPrimeUpstreamProviderName)
+              .join(", ")}`,
+          }
+        : { message: PRIME_LOGIN_GUIDANCE }),
+    } satisfies ServerProviderStatus;
+  });
+
+export const checkPrimeProviderStatus = makeCheckPrimeProviderStatus();
+
 // ── Snapshot helpers ────────────────────────────────────────────────
 
 function comparableProviderVersionAdvisory(
@@ -2192,6 +2302,8 @@ export function makeProviderHealthLive(options?: { readonly providerUpdateTimeou
             return settings.providers.pi.binaryPath;
           case "devin":
             return settings.providers.devin.binaryPath;
+          case "prime":
+            return settings.providers.prime.binaryPath;
         }
       };
 
@@ -2403,6 +2515,14 @@ export function makeProviderHealthLive(options?: { readonly providerUpdateTimeou
                   checkPiProviderStatus(
                     settings.providers.pi.agentDir,
                     settings.providers.pi.binaryPath,
+                  ),
+                ),
+                checkProviderWhenEnabled(
+                  settings,
+                  PRIME_PROVIDER,
+                  makeCheckPrimeProviderStatus(
+                    settings.providers.prime.binaryPath,
+                    settings.providers.prime.agentDir,
                   ),
                 ),
               ],

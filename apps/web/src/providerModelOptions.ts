@@ -25,6 +25,8 @@ import {
   type OpenCodeModelSelection,
   type PiModelOptions,
   type PiModelSelection,
+  type PrimeModelOptions,
+  type PrimeModelSelection,
   type ProviderKind,
   type ProviderModelOptions,
 } from "@synara/contracts";
@@ -82,7 +84,7 @@ export function formatProviderModelOptionName(input: {
     return trimmedSlug;
   }
 
-  if (input.provider === "opencode" || input.provider === "pi") {
+  if (input.provider === "opencode" || input.provider === "pi" || input.provider === "prime") {
     const modelIdentifier = trimmedSlug.includes("/")
       ? trimmedSlug.slice(trimmedSlug.lastIndexOf("/") + 1)
       : trimmedSlug;
@@ -358,6 +360,12 @@ export function buildNextProviderOptions(
       ...patch,
     } as OpenCodeModelOptions;
   }
+  if (provider === "prime") {
+    return {
+      ...(modelOptions as PrimeModelOptions | undefined),
+      ...patch,
+    } as PrimeModelOptions;
+  }
   return {
     ...(modelOptions as PiModelOptions | undefined),
     ...patch,
@@ -413,6 +421,11 @@ export function buildModelSelection(
   model: string,
   options?: PiModelOptions | null | undefined,
 ): PiModelSelection;
+export function buildModelSelection(
+  provider: "prime",
+  model: string,
+  options?: PrimeModelOptions | null | undefined,
+): PrimeModelSelection;
 export function buildModelSelection(
   provider: "devin",
   model: string,
@@ -500,6 +513,14 @@ export function buildModelSelection(
             provider,
             model,
             options: options as PiModelOptions,
+          }
+        : { provider, model };
+    case "prime":
+      return options
+        ? {
+            provider,
+            model,
+            options: options as PrimeModelOptions,
           }
         : { provider, model };
   }

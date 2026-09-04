@@ -1688,7 +1688,8 @@ const make = Effect.gen(function* () {
             )
           : (currentProvider === "droid" ||
               currentProvider === "grok" ||
-              currentProvider === "devin") &&
+              currentProvider === "devin" ||
+              currentProvider === "prime") &&
             !Equal.equals(previousModelSelection, requestedModelSelection));
 
       if (

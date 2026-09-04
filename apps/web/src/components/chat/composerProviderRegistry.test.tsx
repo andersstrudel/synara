@@ -62,6 +62,19 @@ const PI_RUNTIME_MODEL_WITH_REASONING: ProviderModelDescriptor = {
   defaultReasoningEffort: "medium",
 };
 
+const PRIME_RUNTIME_MODEL_WITH_REASONING: ProviderModelDescriptor = {
+  slug: "cerebras/qwen-3.8-27b",
+  name: "Qwen 3.8 27B",
+  upstreamProviderId: "cerebras",
+  upstreamProviderName: "Cerebras",
+  supportedReasoningEfforts: [
+    { value: "off", label: "Off" },
+    { value: "medium", label: "Medium" },
+    { value: "xhigh", label: "Extra High" },
+  ],
+  defaultReasoningEffort: "medium",
+};
+
 const DROID_RUNTIME_GPT_5_6_WITH_REASONING: ProviderModelDescriptor = {
   slug: "gpt-5.6-sol",
   name: "GPT-5.6 Sol",
@@ -1154,6 +1167,37 @@ describe("getComposerProviderState", () => {
       promptEffort: "max",
       modelOptionsForDispatch: {
         thinkingLevel: "max",
+      },
+    });
+  });
+
+  it("keeps Prime runtime thinking selections on the thinkingLevel field", () => {
+    const selection = getComposerTraitSelection(
+      "prime",
+      "cerebras/qwen-3.8-27b",
+      "",
+      { thinkingLevel: "xhigh" },
+      PRIME_RUNTIME_MODEL_WITH_REASONING,
+    );
+    const state = getComposerProviderState({
+      provider: "prime",
+      model: "cerebras/qwen-3.8-27b",
+      runtimeModel: PRIME_RUNTIME_MODEL_WITH_REASONING,
+      prompt: "",
+      modelOptions: {
+        prime: {
+          thinkingLevel: "xhigh",
+        },
+      },
+    });
+
+    expect(selection.primarySelectDescriptor?.id).toBe("thinkingLevel");
+    expect(selection.effort).toBe("xhigh");
+    expect(state).toEqual({
+      provider: "prime",
+      promptEffort: "xhigh",
+      modelOptionsForDispatch: {
+        thinkingLevel: "xhigh",
       },
     });
   });

@@ -1,0 +1,820 @@
+// FILE: PrimeAdapter.test.ts
+// Purpose: Adapter/runtime contract tests for Prime Agent session start, resume,
+// turn lifecycle, compaction, and RPC discovery.
+// Layer: Provider adapter tests
+
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import type * as Acp from "@agentclientprotocol/sdk";
+import { type ProviderRuntimeEvent, ThreadId } from "@synara/contracts";
+import { Deferred, Effect, Fiber, Layer, Semaphore, Stream } from "effect";
+import { afterEach, describe, expect, it } from "vitest";
+
+import { ServerConfig } from "../../config.ts";
+import type { AcpSessionRuntimeShape } from "../acp/AcpSessionRuntime.ts";
+import type { PrimeRpcDiscoveryResult } from "../acp/PrimeAcpSupport.ts";
+import { PrimeAdapter } from "../Services/PrimeAdapter.ts";
+import {
+  buildPrimeResumeCursor,
+  makeCachedPrimeModelDiscovery,
+  makePrimeAdapterLive,
+  parsePrimeResume,
+  resolvePrimeAdapterTimeouts,
+  resolvePrimeStartModel,
+  validatePrimeRuntimeMode,
+} from "./PrimeAdapter.ts";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const mockAgentPath = path.join(__dirname, "../../../scripts/acp-mock-agent.ts");
+
+const FAST_TIMEOUTS = { turnIdleMs: 30_000, toolIdleMs: 60_000, sessionDetectMs: 20 };
+
+interface JsonRpcRequest {
+  readonly method?: string;
+  readonly params?: Record<string, unknown>;
+}
+
+interface PrimeMockAgent {
+  readonly tempDir: string;
+  readonly binaryPath: string;
+  readonly agentDir: string;
+  readonly sessionsDir: string;
+  readonly cwd: string;
+  readonly sessionId: string;
+  readArgs: () => ReadonlyArray<ReadonlyArray<string>>;
+  readRequests: () => ReadonlyArray<JsonRpcRequest>;
+}
+
+const tempDirs: string[] = [];
+afterEach(() => {
+  for (const dir of tempDirs.splice(0)) {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function readJsonLines<T>(filePath: string): ReadonlyArray<T> {
+  let content: string;
+  try {
+    content = readFileSync(filePath, "utf8");
+  } catch {
+    return [];
+  }
+  return content
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line) as T);
+}
+
+/**
+ * Stands in for `prime-agent`: records its argv, mimics Prime writing the
+ * session header at process start (unless resuming), then execs the shared
+ * ACP mock agent with `session/load` disabled like the real CLI.
+ */
+function makePrimeMockAgent(): PrimeMockAgent {
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), "synara-prime-adapter-"));
+  tempDirs.push(tempDir);
+  const agentDir = path.join(tempDir, "agent");
+  const sessionsDir = path.join(agentDir, "sessions");
+  const cwd = path.join(tempDir, "work");
+  const binDir = path.join(tempDir, "bin");
+  mkdirSync(sessionsDir, { recursive: true });
+  mkdirSync(cwd, { recursive: true });
+  mkdirSync(binDir, { recursive: true });
+  const argsLogPath = path.join(tempDir, "args.jsonl");
+  const requestLogPath = path.join(tempDir, "requests.jsonl");
+  const sessionId = `prime-header-${crypto.randomUUID()}`;
+  const wrapperPath = path.join(binDir, "prime-agent.mjs");
+  writeFileSync(
+    wrapperPath,
+    [
+      'import { spawn } from "node:child_process";',
+      'import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";',
+      'import path from "node:path";',
+      "const args = process.argv.slice(2);",
+      `appendFileSync(${JSON.stringify(argsLogPath)}, JSON.stringify(args) + "\\n");`,
+      'const cwd = args[args.indexOf("--cwd") + 1];',
+      'const sessionsDir = path.join(process.env.PRIME_AGENT_CODING_AGENT_DIR, "sessions");',
+      'if (!args.includes("--resume")) {',
+      "  mkdirSync(sessionsDir, { recursive: true });",
+      "  writeFileSync(",
+      "    path.join(sessionsDir, `${crypto.randomUUID()}.jsonl`),",
+      `    JSON.stringify({ type: "session", version: 3, id: ${JSON.stringify(sessionId)}, timestamp: new Date().toISOString(), cwd, rlmDepth: 0 }) + "\\n",`,
+      "  );",
+      "}",
+      `const child = spawn(process.execPath, [${JSON.stringify(mockAgentPath)}], {`,
+      '  stdio: "inherit",',
+      `  env: { ...process.env, SYNARA_ACP_REQUEST_LOG_PATH: ${JSON.stringify(requestLogPath)}, SYNARA_ACP_SUPPORT_SESSION_LOAD: "0" },`,
+      "});",
+      'process.on("SIGTERM", () => child.kill("SIGTERM"));',
+      'child.on("exit", (code) => process.exit(code ?? 0));',
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const binaryPath = path.join(binDir, "prime-agent");
+  writeFileSync(
+    binaryPath,
+    `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(wrapperPath)} "$@"\n`,
+    "utf8",
+  );
+  chmodSync(binaryPath, 0o755);
+  return {
+    tempDir,
+    binaryPath,
+    agentDir,
+    sessionsDir,
+    cwd,
+    sessionId,
+    readArgs: () => readJsonLines<ReadonlyArray<string>>(argsLogPath),
+    readRequests: () => readJsonLines<JsonRpcRequest>(requestLogPath),
+  };
+}
+
+function writePrimeSessionFile(agent: PrimeMockAgent, sessionId: string): string {
+  const file = path.join(agent.sessionsDir, `${crypto.randomUUID()}.jsonl`);
+  writeFileSync(
+    file,
+    `${JSON.stringify({
+      type: "session",
+      version: 3,
+      id: sessionId,
+      timestamp: new Date().toISOString(),
+      cwd: agent.cwd,
+      rlmDepth: 0,
+    })}\n`,
+    "utf8",
+  );
+  return file;
+}
+
+function makePrimeAdapterTestLayer(
+  settings: { readonly binaryPath?: string; readonly agentDir?: string },
+  options: Parameters<typeof makePrimeAdapterLive>[1] = {},
+) {
+  return makePrimeAdapterLive(settings, { timeouts: FAST_TIMEOUTS, ...options }).pipe(
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "prime-adapter-test-" })),
+    Layer.provideMerge(NodeServices.layer),
+  );
+}
+
+function makeLifecycleAcpRuntime(
+  prompt: AcpSessionRuntimeShape["prompt"] = () =>
+    Effect.succeed({ stopReason: "end_turn" } as Acp.PromptResponse),
+  onCancel: () => void = () => undefined,
+): AcpSessionRuntimeShape {
+  const registerHandler = () => Effect.void;
+  return {
+    handleRequestPermission: registerHandler,
+    handleElicitation: registerHandler,
+    handleReadTextFile: registerHandler,
+    handleWriteTextFile: registerHandler,
+    handleCreateTerminal: registerHandler,
+    handleTerminalOutput: registerHandler,
+    handleTerminalWaitForExit: registerHandler,
+    handleTerminalKill: registerHandler,
+    handleTerminalRelease: registerHandler,
+    handleSessionUpdate: registerHandler,
+    handleElicitationComplete: registerHandler,
+    handleExtRequest: registerHandler,
+    handleExtNotification: registerHandler,
+    start: () =>
+      Effect.succeed({
+        sessionId: "prime-acp-session",
+        initializeResult: {} as Acp.InitializeResponse,
+        sessionSetupResult: {} as Acp.NewSessionResponse,
+        modelConfigId: undefined,
+        sessionSetupMethod: "new",
+      }),
+    awaitExit: Effect.never,
+    getEvents: () => Stream.never,
+    sessionUpdatesEnqueuedCount: Effect.succeed(0),
+    supportsSessionFork: Effect.succeed(false),
+    supportsSessionRecovery: Effect.succeed(false),
+    getModeState: Effect.succeed(undefined),
+    getSessionEpoch: () => Effect.succeed(0 as never),
+    getPendingSessionNotificationCount: () => Effect.succeed(0),
+    getConfigOptions: Effect.succeed([]),
+    getAvailableCommands: Effect.succeed([]),
+    awaitLoadReplayReady: Effect.void,
+    prompt,
+    cancel: Effect.sync(onCancel),
+    setMode: () => Effect.succeed({} as Acp.SetSessionModeResponse),
+    setConfigOption: () => Effect.succeed({} as Acp.SetSessionConfigOptionResponse),
+    setModel: () => Effect.void,
+    forkSession: () => Effect.succeed({} as Acp.ForkSessionResponse),
+    request: () => Effect.succeed({}),
+    notify: () => Effect.void,
+  } as AcpSessionRuntimeShape;
+}
+
+function collectRuntimeEvents(stream: Stream.Stream<ProviderRuntimeEvent>) {
+  const events: ProviderRuntimeEvent[] = [];
+  const collector = Stream.runForEach(stream, (event) =>
+    Effect.sync(() => {
+      events.push(event);
+    }),
+  ).pipe(Effect.forkChild);
+  const waitFor = (predicate: (event: ProviderRuntimeEvent) => boolean, timeoutMs = 15_000) =>
+    Effect.gen(function* () {
+      const startedAt = Date.now();
+      while (!events.some(predicate)) {
+        if (Date.now() - startedAt > timeoutMs) {
+          throw new Error(
+            `Timed out waiting for runtime event. Seen: ${events.map((event) => event.type).join(", ")}`,
+          );
+        }
+        yield* Effect.sleep(20);
+      }
+      return events.find(predicate)!;
+    });
+  return { events, collector, waitFor };
+}
+
+function promptTexts(requests: ReadonlyArray<JsonRpcRequest>): string[] {
+  return requests
+    .filter((request) => request.method === "session/prompt")
+    .map((request) => {
+      const prompt = (request.params?.prompt ?? []) as ReadonlyArray<{
+        readonly type: string;
+        readonly text?: string;
+      }>;
+      return prompt.at(-1)?.text ?? "";
+    });
+}
+
+function rpcDiscoveryStub(
+  responses: ReadonlyArray<readonly [string, unknown]>,
+  onCall: () => void = () => undefined,
+): (input: unknown) => Effect.Effect<PrimeRpcDiscoveryResult> {
+  return () =>
+    Effect.sync(() => {
+      onCall();
+      return {
+        responses: new Map(responses.map(([id, data]) => [id, { id, success: true, data }])),
+        stderr: "",
+        exitCode: 0,
+      };
+    });
+}
+
+describe("resolvePrimeAdapterTimeouts", () => {
+  it("uses the production defaults when overrides are absent", () => {
+    expect(resolvePrimeAdapterTimeouts({})).toEqual({
+      turnIdleMs: 30 * 60 * 1000,
+      toolIdleMs: 60 * 60 * 1000,
+      sessionDetectMs: 4_000,
+    });
+  });
+
+  it("uses valid environment overrides", () => {
+    expect(
+      resolvePrimeAdapterTimeouts({
+        SYNARA_PRIME_TURN_IDLE_TIMEOUT_MS: "1234",
+        SYNARA_PRIME_TOOL_IDLE_TIMEOUT_MS: "5678",
+      }),
+    ).toMatchObject({ turnIdleMs: 1234, toolIdleMs: 5678 });
+  });
+});
+
+describe("Prime resume cursor", () => {
+  it("round-trips the session header id", () => {
+    expect(parsePrimeResume(buildPrimeResumeCursor("01a0-header"))).toEqual({
+      sessionId: "01a0-header",
+    });
+    expect(parsePrimeResume({ schemaVersion: 2, sessionId: "01a0-header" })).toBeUndefined();
+    expect(parsePrimeResume({ schemaVersion: 1, sessionId: "  " })).toBeUndefined();
+    expect(parsePrimeResume("01a0-header")).toBeUndefined();
+  });
+});
+
+describe("resolvePrimeStartModel", () => {
+  it("formats the selection as provider/id with the thinking level", () => {
+    expect(
+      resolvePrimeStartModel({
+        model: "cerebras/qwen-3.8-27b",
+        options: { thinkingLevel: "xhigh" },
+      }),
+    ).toBe("cerebras/qwen-3.8-27b:xhigh");
+    expect(resolvePrimeStartModel({ model: "anthropic/claude-fable-5-1" })).toBe(
+      "anthropic/claude-fable-5-1",
+    );
+    expect(resolvePrimeStartModel(undefined)).toBeUndefined();
+  });
+});
+
+describe("validatePrimeRuntimeMode", () => {
+  it("fails closed for approval-required and accepts the other modes", async () => {
+    await expect(
+      Effect.runPromise(validatePrimeRuntimeMode("approval-required")),
+    ).rejects.toMatchObject({ _tag: "ProviderAdapterValidationError", operation: "startSession" });
+    await expect(Effect.runPromise(validatePrimeRuntimeMode("auto"))).resolves.toBeUndefined();
+    await expect(
+      Effect.runPromise(validatePrimeRuntimeMode("full-access")),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe("makeCachedPrimeModelDiscovery", () => {
+  it("caches successful discovery per binary and agent dir", async () => {
+    let discoveryCalls = 0;
+    const results = await Effect.runPromise(
+      Effect.gen(function* () {
+        const discoveryLock = yield* Semaphore.make(1);
+        const discoverModels = makeCachedPrimeModelDiscovery({
+          discoveryLock,
+          discover: () =>
+            Effect.sync(() => {
+              discoveryCalls += 1;
+              return { models: [], source: "prime-rpc", cached: false };
+            }),
+        });
+        return [
+          yield* discoverModels({ binaryPath: " prime-agent ", agentDir: undefined }),
+          yield* discoverModels({ binaryPath: "prime-agent", agentDir: undefined }),
+          yield* discoverModels({ binaryPath: "prime-agent", agentDir: "/other/agent" }),
+        ];
+      }),
+    );
+
+    expect(discoveryCalls).toBe(2);
+    expect(results.map((result) => result.cached)).toEqual([false, true, false]);
+  });
+
+  it("retries discovery after an error result and coalesces concurrent calls", async () => {
+    let discoveryCalls = 0;
+    const results = await Effect.runPromise(
+      Effect.gen(function* () {
+        const discoveryLock = yield* Semaphore.make(1);
+        const discoverModels = makeCachedPrimeModelDiscovery({
+          discoveryLock,
+          discover: () =>
+            Effect.gen(function* () {
+              discoveryCalls += 1;
+              yield* Effect.sleep(10);
+              return discoveryCalls === 1
+                ? { models: [], source: "prime.unavailable", cached: false, error: "not ready" }
+                : { models: [], source: "prime-rpc", cached: false };
+            }),
+        });
+        const target = { binaryPath: "prime-agent", agentDir: undefined };
+        const first = yield* discoverModels(target);
+        const rest = yield* Effect.all([discoverModels(target), discoverModels(target)], {
+          concurrency: "unbounded",
+        });
+        return [first, ...rest];
+      }),
+    );
+
+    expect(discoveryCalls).toBe(2);
+    expect(results[0]?.error).toBe("not ready");
+    expect(results.slice(1).map((result) => result.cached)).toEqual([false, true]);
+  });
+});
+
+describe("Prime adapter lifecycle (fake runtime)", () => {
+  it("rejects approval-required before spawning anything", async () => {
+    let runtimeCreated = false;
+    const agent = makePrimeMockAgent();
+    const layer = makePrimeAdapterTestLayer(
+      { agentDir: agent.agentDir },
+      {
+        makeAcpRuntime: () =>
+          Effect.sync(() => {
+            runtimeCreated = true;
+            return makeLifecycleAcpRuntime();
+          }),
+      },
+    );
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* PrimeAdapter;
+        const error = yield* adapter
+          .startSession({
+            provider: "prime",
+            threadId: ThreadId.makeUnsafe("thread-prime-approval"),
+            runtimeMode: "approval-required",
+            cwd: agent.cwd,
+          })
+          .pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "ProviderAdapterValidationError",
+          operation: "startSession",
+        });
+        expect(runtimeCreated).toBe(false);
+      }).pipe(Effect.provide(layer)),
+    );
+  });
+
+  it("interrupts an active turn through session/cancel and rejects overlapping sends", async () => {
+    const promptStarted = await Effect.runPromise(Deferred.make<void>());
+    let cancelCalls = 0;
+    const runtime = makeLifecycleAcpRuntime(
+      () => Deferred.succeed(promptStarted, undefined).pipe(Effect.andThen(Effect.never)),
+      () => {
+        cancelCalls += 1;
+      },
+    );
+    const agent = makePrimeMockAgent();
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* PrimeAdapter;
+        const threadId = ThreadId.makeUnsafe("thread-prime-interrupt");
+        yield* adapter.startSession({
+          provider: "prime",
+          threadId,
+          runtimeMode: "full-access",
+          cwd: agent.cwd,
+        });
+        const turn = yield* adapter.sendTurn({ threadId, input: "first", attachments: [] });
+        yield* Deferred.await(promptStarted);
+        const duplicateError = yield* adapter
+          .sendTurn({ threadId, input: "second", attachments: [] })
+          .pipe(Effect.flip);
+        expect(duplicateError).toMatchObject({
+          _tag: "ProviderAdapterValidationError",
+          operation: "sendTurn",
+        });
+        expect(
+          (yield* adapter.listSessions()).find((session) => session.threadId === threadId),
+        ).toMatchObject({ status: "running", activeTurnId: turn.turnId });
+
+        yield* adapter.interruptTurn(threadId, turn.turnId);
+        const readySession = (yield* adapter.listSessions()).find(
+          (session) => session.threadId === threadId,
+        );
+        expect(readySession?.status).toBe("ready");
+        expect(readySession?.activeTurnId).toBeUndefined();
+        expect(cancelCalls).toBe(1);
+        yield* adapter.stopSession(threadId);
+        expect(yield* adapter.hasSession(threadId)).toBe(false);
+      }).pipe(
+        Effect.provide(
+          makePrimeAdapterTestLayer(
+            { agentDir: agent.agentDir },
+            { makeAcpRuntime: () => Effect.succeed(runtime) },
+          ),
+        ),
+      ),
+    );
+  });
+});
+
+describe("Prime RPC discovery through the adapter", () => {
+  const modelsData = {
+    models: [
+      {
+        id: "qwen-3.8-27b",
+        name: "Qwen 3.8 27B",
+        provider: "cerebras",
+        reasoning: true,
+        thinkingLevelMap: { xhigh: null, max: null },
+        input: ["text", "image"],
+        contextWindow: 131_072,
+      },
+      {
+        id: "claude-fable-5-1",
+        name: "Claude Fable 5.1",
+        provider: "anthropic",
+        reasoning: true,
+        thinkingLevelMap: { off: null },
+        input: ["text", "image"],
+        contextWindow: 1_000_000,
+      },
+    ],
+  };
+  const stateData = { model: modelsData.models[1], thinkingLevel: "medium" };
+  const commandsData = {
+    commands: [{ name: "skill:websearch", description: "Search the web", source: "skill" }],
+  };
+
+  it("lists models from get_available_models/get_state and caches for five minutes", async () => {
+    let discoveryCalls = 0;
+    const agent = makePrimeMockAgent();
+    const results = await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* PrimeAdapter;
+        const first = yield* adapter.listModels!({ provider: "prime", agentDir: agent.agentDir });
+        const second = yield* adapter.listModels!({ provider: "prime", agentDir: agent.agentDir });
+        return [first, second];
+      }).pipe(
+        Effect.provide(
+          makePrimeAdapterTestLayer(
+            {},
+            {
+              runRpcDiscovery: rpcDiscoveryStub(
+                [
+                  ["models", modelsData],
+                  ["state", stateData],
+                ],
+                () => {
+                  discoveryCalls += 1;
+                },
+              ),
+            },
+          ),
+        ),
+      ),
+    );
+
+    expect(discoveryCalls).toBe(1);
+    expect(results[0]).toMatchObject({ source: "prime-rpc", cached: false });
+    expect(results[0]?.models.map((model) => model.slug)).toEqual([
+      "anthropic/claude-fable-5-1",
+      "cerebras/qwen-3.8-27b",
+    ]);
+    expect(results[0]?.models[0]).toMatchObject({
+      description: "anthropic · 1M context · vision",
+      defaultReasoningEffort: "medium",
+    });
+    expect(results[1]?.cached).toBe(true);
+  });
+
+  it("reports an unreachable CLI as an empty list with an error and no static fallback", async () => {
+    let discoveryCalls = 0;
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* PrimeAdapter;
+        yield* adapter.listModels!({ provider: "prime", binaryPath: "/missing/prime-agent" });
+        return yield* adapter.listModels!({
+          provider: "prime",
+          binaryPath: "/missing/prime-agent",
+        });
+      }).pipe(
+        Effect.provide(
+          makePrimeAdapterTestLayer(
+            {},
+            {
+              runRpcDiscovery: () =>
+                Effect.sync(() => {
+                  discoveryCalls += 1;
+                  return {
+                    responses: new Map(),
+                    stderr: "spawn /missing/prime-agent ENOENT",
+                    exitCode: 1,
+                  };
+                }),
+            },
+          ),
+        ),
+      ),
+    );
+
+    // Failures are not cached, so the second call probes again.
+    expect(discoveryCalls).toBe(2);
+    expect(result).toMatchObject({
+      models: [],
+      source: "prime.unavailable",
+      cached: false,
+      error: "spawn /missing/prime-agent ENOENT",
+    });
+  });
+
+  it("lists commands from get_commands behind the synthetic compact command", async () => {
+    const seenInputs: Array<{ readonly cwd: string | undefined; readonly requests: unknown }> = [];
+    const agent = makePrimeMockAgent();
+    const results = await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* PrimeAdapter;
+        const first = yield* adapter.listCommands!({ provider: "prime", cwd: agent.cwd });
+        const second = yield* adapter.listCommands!({ provider: "prime", cwd: agent.cwd });
+        return [first, second];
+      }).pipe(
+        Effect.provide(
+          makePrimeAdapterTestLayer(
+            {},
+            {
+              runRpcDiscovery: (input) => {
+                seenInputs.push({ cwd: input.cwd, requests: input.requests });
+                return rpcDiscoveryStub([["commands", commandsData]])(input);
+              },
+            },
+          ),
+        ),
+      ),
+    );
+
+    expect(seenInputs).toEqual([
+      { cwd: path.resolve(agent.cwd), requests: [{ id: "commands", type: "get_commands" }] },
+    ]);
+    expect(results[0]).toEqual({
+      commands: [
+        { name: "compact", description: "Compact the conversation context" },
+        { name: "skill:websearch", description: "Search the web" },
+      ],
+      source: "prime-rpc",
+      cached: false,
+    });
+    expect(results[1]?.cached).toBe(true);
+  });
+
+  it("lists native skills from the same get_commands answer and shares the command cache", async () => {
+    let discoveryCalls = 0;
+    const agent = makePrimeMockAgent();
+    const skillsData = {
+      commands: [
+        {
+          name: "skill:refine",
+          description: "Refine the harness",
+          source: "skill",
+          sourceInfo: {
+            path: "/opt/prime-agent/dist/skills/refine/SKILL.md",
+            source: "builtin",
+            scope: "user",
+          },
+        },
+        { name: "review", source: "prompt" },
+      ],
+    };
+    const results = await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* PrimeAdapter;
+        const skills = yield* adapter.listSkills!({ provider: "prime", cwd: agent.cwd });
+        const commands = yield* adapter.listCommands!({ provider: "prime", cwd: agent.cwd });
+        return [skills, commands] as const;
+      }).pipe(
+        Effect.provide(
+          makePrimeAdapterTestLayer(
+            {},
+            {
+              runRpcDiscovery: rpcDiscoveryStub([["commands", skillsData]], () => {
+                discoveryCalls += 1;
+              }),
+            },
+          ),
+        ),
+      ),
+    );
+
+    expect(discoveryCalls).toBe(1);
+    expect(results[0]).toEqual({
+      skills: [
+        {
+          name: "refine",
+          description: "Refine the harness",
+          path: "/opt/prime-agent/dist/skills/refine/SKILL.md",
+          enabled: true,
+          scope: "prime",
+        },
+      ],
+      source: "prime-rpc",
+      cached: false,
+    });
+    expect(results[1]).toEqual({
+      commands: [
+        { name: "compact", description: "Compact the conversation context" },
+        { name: "skill:refine", description: "Refine the harness" },
+        { name: "review" },
+      ],
+      source: "prime-rpc",
+      cached: true,
+    });
+  });
+});
+
+describe("Prime adapter with the ACP mock agent", () => {
+  it("starts fresh with --model, publishes the detected session id, sends turns, and compacts", async () => {
+    const agent = makePrimeMockAgent();
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* PrimeAdapter;
+        const { events, collector, waitFor } = collectRuntimeEvents(adapter.streamEvents);
+        const collectorFiber = yield* collector;
+        const threadId = ThreadId.makeUnsafe("thread-prime-fresh");
+
+        const session = yield* adapter.startSession({
+          provider: "prime",
+          threadId,
+          runtimeMode: "full-access",
+          cwd: agent.cwd,
+          modelSelection: {
+            provider: "prime",
+            model: "cerebras/qwen-3.8-27b",
+            options: { thinkingLevel: "high" },
+          },
+        });
+
+        expect(session.model).toBe("cerebras/qwen-3.8-27b");
+        expect(session.resumeCursor).toEqual(buildPrimeResumeCursor(agent.sessionId));
+        expect(agent.readArgs()).toEqual([
+          ["--mode", "acp", "--cwd", agent.cwd, "--model", "cerebras/qwen-3.8-27b:high"],
+        ]);
+        const started = yield* waitFor((event) => event.type === "thread.started");
+        expect(started).toMatchObject({ payload: { providerThreadId: agent.sessionId } });
+        const sessionNew = agent.readRequests().find((request) => request.method === "session/new");
+        expect(sessionNew?.params).toMatchObject({ cwd: agent.cwd, mcpServers: [] });
+        expect(agent.readRequests().some((request) => request.method === "session/load")).toBe(
+          false,
+        );
+
+        const turn = yield* adapter.sendTurn({ threadId, input: "hello prime", attachments: [] });
+        expect(turn.resumeCursor).toEqual(buildPrimeResumeCursor(agent.sessionId));
+        const completed = yield* waitFor(
+          (event) => event.type === "turn.completed" && event.turnId === turn.turnId,
+        );
+        expect(completed).toMatchObject({
+          payload: { state: "completed", stopReason: "end_turn" },
+        });
+        expect(events.some((event) => event.type === "content.delta")).toBe(true);
+
+        const planTurn = yield* adapter.sendTurn({
+          threadId,
+          input: "design it",
+          attachments: [],
+          interactionMode: "plan",
+        });
+        yield* waitFor(
+          (event) => event.type === "turn.completed" && event.turnId === planTurn.turnId,
+        );
+
+        yield* adapter.compactThread!(threadId);
+        yield* waitFor(
+          (event) =>
+            event.type === "thread.state.changed" &&
+            (event.payload as { readonly state?: string }).state === "compacted",
+        );
+
+        const prompts = promptTexts(agent.readRequests());
+        expect(prompts[0]).toBe("hello prime");
+        expect(prompts[1]).toMatch(/^Prime Agent plan mode is active\./u);
+        expect(prompts[1]).toContain("User request:\ndesign it");
+        expect(prompts[2]).toBe("/compact");
+
+        yield* adapter.stopSession(threadId);
+        yield* waitFor((event) => event.type === "session.exited");
+        yield* Fiber.interrupt(collectorFiber);
+      }).pipe(
+        Effect.provide(
+          makePrimeAdapterTestLayer({ binaryPath: agent.binaryPath, agentDir: agent.agentDir }),
+        ),
+      ),
+    );
+  });
+
+  it("resumes with --resume plus a fresh session/new and keeps the session id", async () => {
+    const agent = makePrimeMockAgent();
+    const resumeSessionId = "prime-header-resume";
+    writePrimeSessionFile(agent, resumeSessionId);
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* PrimeAdapter;
+        const threadId = ThreadId.makeUnsafe("thread-prime-resume");
+        const input = {
+          provider: "prime" as const,
+          threadId,
+          runtimeMode: "full-access" as const,
+          cwd: agent.cwd,
+          resumeCursor: buildPrimeResumeCursor(resumeSessionId),
+        };
+        const session = yield* adapter.startSession(input);
+
+        expect(session.resumeCursor).toEqual(buildPrimeResumeCursor(resumeSessionId));
+        expect(adapter.didResumeSession?.(input, session)).toBe(true);
+        expect(agent.readArgs()).toEqual([
+          ["--mode", "acp", "--cwd", agent.cwd, "--resume", resumeSessionId],
+        ]);
+        const methods = agent.readRequests().map((request) => request.method);
+        expect(methods).toContain("session/new");
+        expect(methods).not.toContain("session/load");
+        expect(methods).not.toContain("authenticate");
+
+        yield* adapter.stopSession(threadId);
+      }).pipe(
+        Effect.provide(
+          makePrimeAdapterTestLayer({ binaryPath: agent.binaryPath, agentDir: agent.agentDir }),
+        ),
+      ),
+    );
+  });
+
+  it("falls back to a fresh session when the resume target no longer exists", async () => {
+    const agent = makePrimeMockAgent();
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const adapter = yield* PrimeAdapter;
+        const threadId = ThreadId.makeUnsafe("thread-prime-resume-missing");
+        const input = {
+          provider: "prime" as const,
+          threadId,
+          runtimeMode: "full-access" as const,
+          cwd: agent.cwd,
+          resumeCursor: buildPrimeResumeCursor("prime-header-deleted"),
+        };
+        const session = yield* adapter.startSession(input);
+
+        expect(session.resumeCursor).toEqual(buildPrimeResumeCursor(agent.sessionId));
+        expect(adapter.didResumeSession?.(input, session)).toBe(false);
+        expect(agent.readArgs()).toEqual([["--mode", "acp", "--cwd", agent.cwd]]);
+
+        yield* adapter.stopSession(threadId);
+      }).pipe(
+        Effect.provide(
+          makePrimeAdapterTestLayer({ binaryPath: agent.binaryPath, agentDir: agent.agentDir }),
+        ),
+      ),
+    );
+  });
+});

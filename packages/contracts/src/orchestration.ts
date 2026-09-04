@@ -9,6 +9,7 @@ import {
   GrokModelOptions,
   OpenCodeModelOptions,
   PiModelOptions,
+  PrimeModelOptions,
 } from "./model";
 import { ProviderMentionReference, ProviderSkillReference } from "./providerDiscovery";
 import { ProjectKind } from "./project";
@@ -65,6 +66,7 @@ export const ProviderKind = Schema.Literals([
   "opencode",
   "pi",
   "devin",
+  "prime",
 ]);
 export type ProviderKind = typeof ProviderKind.Type;
 
@@ -173,6 +175,13 @@ export const DevinModelSelection = Schema.Struct({
 });
 export type DevinModelSelection = typeof DevinModelSelection.Type;
 
+export const PrimeModelSelection = Schema.Struct({
+  provider: Schema.Literal("prime"),
+  model: TrimmedNonEmptyString,
+  options: Schema.optional(PrimeModelOptions),
+});
+export type PrimeModelSelection = typeof PrimeModelSelection.Type;
+
 export const ModelSelection = Schema.Union([
   CodexModelSelection,
   ClaudeModelSelection,
@@ -183,6 +192,7 @@ export const ModelSelection = Schema.Union([
   DroidModelSelection,
   OpenCodeModelSelection,
   PiModelSelection,
+  PrimeModelSelection,
 ]);
 export type ModelSelection = typeof ModelSelection.Type;
 
@@ -229,6 +239,11 @@ export const DevinProviderStartOptions = Schema.Struct({
   binaryPath: Schema.optional(TrimmedNonEmptyString),
 });
 
+export const PrimeProviderStartOptions = Schema.Struct({
+  binaryPath: Schema.optional(TrimmedNonEmptyString),
+  agentDir: Schema.optional(TrimmedNonEmptyString),
+});
+
 export const ProviderStartOptions = Schema.Struct({
   codex: Schema.optional(CodexProviderStartOptions),
   claudeAgent: Schema.optional(ClaudeProviderStartOptions),
@@ -239,6 +254,7 @@ export const ProviderStartOptions = Schema.Struct({
   droid: Schema.optional(DroidProviderStartOptions),
   opencode: Schema.optional(OpenCodeProviderStartOptions),
   pi: Schema.optional(PiProviderStartOptions),
+  prime: Schema.optional(PrimeProviderStartOptions),
 });
 export type ProviderStartOptions = typeof ProviderStartOptions.Type;
 

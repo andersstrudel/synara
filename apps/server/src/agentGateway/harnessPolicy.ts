@@ -88,6 +88,7 @@ const PROVIDERS_WITH_THREAD_SCOPED_SYNARA_MCP = new Set<ProviderKind>([
   "devin",
   "opencode",
   "pi",
+  "prime",
 ]);
 
 export function providerHasSynaraGatewayControl(input: {

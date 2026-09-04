@@ -395,6 +395,7 @@ export function PluginLibrary() {
   const openCodeCapabilitiesQuery = useQuery(providerComposerCapabilitiesQueryOptions("opencode"));
   const piCapabilitiesQuery = useQuery(providerComposerCapabilitiesQueryOptions("pi"));
   const devinCapabilitiesQuery = useQuery(providerComposerCapabilitiesQueryOptions("devin"));
+  const primeCapabilitiesQuery = useQuery(providerComposerCapabilitiesQueryOptions("prime"));
 
   const providerCapabilities: Record<ProviderKind, ProviderCapabilities> = {
     codex: {
@@ -432,6 +433,10 @@ export function PluginLibrary() {
     pi: {
       plugins: supportsPluginDiscovery(piCapabilitiesQuery.data),
       skills: supportsSkillDiscovery(piCapabilitiesQuery.data),
+    },
+    prime: {
+      plugins: supportsPluginDiscovery(primeCapabilitiesQuery.data),
+      skills: supportsSkillDiscovery(primeCapabilitiesQuery.data),
     },
   };
 

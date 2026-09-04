@@ -54,7 +54,7 @@ const EMPTY_PROVIDER_AGENTS: ReadonlyArray<ProviderAgentDescriptor> = [];
 export function useProviderModelCatalog(input: {
   selectedProvider: ProviderKind;
   /**
-   * Enables discovery for the on-demand providers (cursor/grok/droid/opencode/pi)
+   * Enables discovery for the on-demand providers (cursor/grok/droid/opencode/pi/prime)
    * even when they are not selected — pass the picker's open state so their lists
    * are warm by the time the user browses them.
    */
@@ -118,6 +118,7 @@ export function useProviderModelCatalog(input: {
   const openCodeModelDiscoveryEnabled = shouldDiscoverProvider("opencode");
   const piModelDiscoveryEnabled = shouldDiscoverProvider("pi");
   const devinModelDiscoveryEnabled = shouldDiscoverProvider("devin");
+  const primeModelDiscoveryEnabled = shouldDiscoverProvider("prime");
 
   const claudeDynamicModelsQuery = useQuery(
     providerModelsQueryOptions({
@@ -190,6 +191,15 @@ export function useProviderModelCatalog(input: {
       enabled: devinModelDiscoveryEnabled,
     }),
   );
+  const primeDynamicModelsQuery = useQuery(
+    providerModelsQueryOptions({
+      provider: "prime",
+      binaryPath: settings.primeBinaryPath || null,
+      agentDir: settings.primeAgentDir || null,
+      cwd: discoveryCwd,
+      enabled: primeModelDiscoveryEnabled,
+    }),
+  );
 
   // Agent/mode discovery (opencode "Agent" picker, claude/codex subagents).
   const claudeDynamicAgentsQuery = useQuery(
@@ -259,6 +269,13 @@ export function useProviderModelCatalog(input: {
     devinModelDiscoveryEnabled &&
     !hasResolvedDevinModelDiscovery &&
     isInitialModelDiscoveryPending(devinDynamicModelsQuery);
+  // Prime Agent has no static fallback catalog, so any non-empty discovery result
+  // is the resolved list regardless of which adapter path produced it.
+  const hasResolvedPrimeModelDiscovery = (primeDynamicModelsQuery.data?.models.length ?? 0) > 0;
+  const primeModelDiscoveryPending =
+    primeModelDiscoveryEnabled &&
+    !hasResolvedPrimeModelDiscovery &&
+    isInitialModelDiscoveryPending(primeDynamicModelsQuery);
   const antigravityModelDiscoveryPending =
     antigravityModelDiscoveryEnabled &&
     !(
@@ -294,6 +311,7 @@ export function useProviderModelCatalog(input: {
       ),
       pi: getAppModelOptions("pi", customModelsByProvider.pi, modelHintByProvider?.pi),
       devin: getAppModelOptions("devin", customModelsByProvider.devin, modelHintByProvider?.devin),
+      prime: getAppModelOptions("prime", customModelsByProvider.prime, modelHintByProvider?.prime),
     };
     const result: Record<
       ProviderKind,
@@ -312,6 +330,7 @@ export function useProviderModelCatalog(input: {
       opencode: openCodeDynamicModelsQuery.data,
       pi: piDynamicModelsQuery.data,
       devin: devinDynamicModelsQuery.data,
+      prime: primeDynamicModelsQuery.data,
     };
     for (const provider of [
       "claudeAgent",
@@ -323,6 +342,7 @@ export function useProviderModelCatalog(input: {
       "opencode",
       "pi",
       "devin",
+      "prime",
     ] as const) {
       const dynamicModels = dynamicSources[provider]?.models;
       if (dynamicModels && dynamicModels.length > 0) {
@@ -347,6 +367,7 @@ export function useProviderModelCatalog(input: {
     openCodeDynamicModelsQuery.data,
     piDynamicModelsQuery.data,
     devinDynamicModelsQuery.data,
+    primeDynamicModelsQuery.data,
   ]);
 
   const loadingModelProviders = useMemo<Partial<Record<ProviderKind, boolean>>>(
@@ -357,6 +378,7 @@ export function useProviderModelCatalog(input: {
       opencode: openCodeModelDiscoveryPending,
       pi: piModelDiscoveryPending,
       devin: devinModelDiscoveryPending,
+      prime: primeModelDiscoveryPending,
     }),
     [
       antigravityModelDiscoveryPending,
@@ -365,6 +387,7 @@ export function useProviderModelCatalog(input: {
       openCodeModelDiscoveryPending,
       piModelDiscoveryPending,
       devinModelDiscoveryPending,
+      primeModelDiscoveryPending,
     ],
   );
 
@@ -381,6 +404,7 @@ export function useProviderModelCatalog(input: {
       opencode: openCodeDynamicModelsQuery.data?.models ?? [],
       pi: piDynamicModelsQuery.data?.models ?? [],
       devin: devinDynamicModelsQuery.data?.models ?? [],
+      prime: primeDynamicModelsQuery.data?.models ?? [],
     }),
     [
       antigravityModelsQuery.data?.models,
@@ -392,6 +416,7 @@ export function useProviderModelCatalog(input: {
       openCodeDynamicModelsQuery.data?.models,
       piDynamicModelsQuery.data?.models,
       devinDynamicModelsQuery.data?.models,
+      primeDynamicModelsQuery.data?.models,
     ],
   );
 
@@ -434,6 +459,7 @@ export function useProviderModelCatalog(input: {
       droid: droidDynamicModelsQuery.data?.error,
       opencode: openCodeDynamicModelsQuery.data?.error,
       pi: piDynamicModelsQuery.data?.error,
+      prime: primeDynamicModelsQuery.data?.error,
     }),
     [
       antigravityModelsQuery.data?.error,
@@ -445,6 +471,7 @@ export function useProviderModelCatalog(input: {
       grokDynamicModelsQuery.data?.error,
       openCodeDynamicModelsQuery.data?.error,
       piDynamicModelsQuery.data?.error,
+      primeDynamicModelsQuery.data?.error,
     ],
   );
 
@@ -467,7 +494,9 @@ export function useProviderModelCatalog(input: {
                   ? openCodeDynamicModelsQuery
                   : selectedProvider === "pi"
                     ? piDynamicModelsQuery
-                    : devinDynamicModelsQuery;
+                    : selectedProvider === "devin"
+                      ? devinDynamicModelsQuery
+                      : primeDynamicModelsQuery;
   const selectedProviderModelsLoading =
     selectedProviderRuntimeModelDiscoveryPending ||
     (loadingModelProviders[selectedProvider] === undefined &&

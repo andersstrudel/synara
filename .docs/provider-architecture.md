@@ -4,7 +4,7 @@ Synara treats provider integrations as adapters behind server-owned orchestratio
 
 ## Implemented providers
 
-`ProviderAdapterRegistryLive` currently registers nine first-class provider kinds:
+`ProviderAdapterRegistryLive` currently registers ten first-class provider kinds:
 
 - `codex`
 - `claudeAgent`
@@ -15,6 +15,7 @@ Synara treats provider integrations as adapters behind server-owned orchestratio
 - `droid`
 - `opencode`
 - `pi`
+- `prime`
 
 The registry is intentionally small. It maps `ProviderKind` to an adapter and lists the registered providers; it does not own session routing, persistence, or cross-provider orchestration.
 
@@ -69,7 +70,7 @@ Capability and discovery data should be authoritative. UI surfaces should consum
 
 ### ACP providers
 
-Cursor, Devin, Droid, and Grok share the Agent Client Protocol infrastructure under `provider/acp`, including `AcpSessionRuntime` and common adapter/session/event helpers. Provider-specific ACP support should extend that shared lifecycle and protocol machinery rather than duplicating it. Individual providers can still layer their own spawn, authentication, model-selection, or compatibility behavior around the shared ACP runtime.
+Cursor, Devin, Droid, Grok, and Prime share the Agent Client Protocol infrastructure under `provider/acp`, including `AcpSessionRuntime` and common adapter/session/event helpers. Provider-specific ACP support should extend that shared lifecycle and protocol machinery rather than duplicating it. Individual providers can still layer their own spawn, authentication, model-selection, or compatibility behavior around the shared ACP runtime.
 
 Codex, Claude, Antigravity, and Pi retain provider-specific integration paths where their native runtimes expose semantics that are not represented by the shared OpenCode or ACP families.
 

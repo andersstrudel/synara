@@ -26,6 +26,8 @@ describe("isProviderInstallSettingsDirty", () => {
       { openCodeExperimentalWebSockets: true },
       { piBinaryPath: "/opt/pi" },
       { piAgentDir: "/tmp/pi-agent" },
+      { primeBinaryPath: "/opt/prime-agent" },
+      { primeAgentDir: "/tmp/prime-agent" },
     ] satisfies ReadonlyArray<Partial<AppSettings>>;
 
     expect(isProviderInstallSettingsDirty(defaults, defaults)).toBe(false);
@@ -71,6 +73,8 @@ describe("createProviderInstallResetPatch", () => {
         "openCodeServerUrl",
         "piAgentDir",
         "piBinaryPath",
+        "primeAgentDir",
+        "primeBinaryPath",
       ].sort(),
     );
     expect(patch.openCodeServerPassword).toBe("");

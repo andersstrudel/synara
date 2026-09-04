@@ -3,7 +3,12 @@
 // Layer: Chat composer presentation
 // Depends on: provider availability metadata, shared menu primitives, and picker trigger styling.
 
-import { type ModelSlug, type ProviderKind, type ServerProviderStatus } from "@synara/contracts";
+import {
+  type ModelSlug,
+  PROVIDER_DISPLAY_NAMES,
+  type ProviderKind,
+  type ServerProviderStatus,
+} from "@synara/contracts";
 import { resolveSelectableModel } from "@synara/shared/model";
 import * as Schema from "effect/Schema";
 import { useDeferredValue, useEffect, useRef, useState } from "react";
@@ -111,7 +116,10 @@ function providerIconClassName(
   provider: ProviderKind | ProviderPickerKind,
   fallbackClassName: string,
 ): string {
-  return provider === "claudeAgent" || provider === "antigravity" || provider === "pi"
+  return provider === "claudeAgent" ||
+    provider === "antigravity" ||
+    provider === "pi" ||
+    provider === "prime"
     ? "text-foreground"
     : fallbackClassName;
 }
@@ -212,6 +220,11 @@ export const ProviderModelMenuItems = function ProviderModelMenuItems(
     EMPTY_FAVORITE_MODEL_SLUGS,
     FavoriteModelSlugs,
   );
+  const [primeFavoriteModelSlugs, setPrimeFavoriteModelSlugs] = useLocalStorage(
+    FAVORITE_MODEL_STORAGE_KEYS.prime,
+    EMPTY_FAVORITE_MODEL_SLUGS,
+    FavoriteModelSlugs,
+  );
   const deferredModelSearchQuery = useDeferredValue(modelSearchQuery);
   const activeProvider = props.lockedProvider ?? props.provider;
   const hiddenProviders = props.hiddenProviders;
@@ -233,10 +246,12 @@ export const ProviderModelMenuItems = function ProviderModelMenuItems(
   const openCodeFavoriteModelSlugSet = new Set(openCodeFavoriteModelSlugs);
   const cursorFavoriteModelSlugSet = new Set(cursorFavoriteModelSlugs);
   const piFavoriteModelSlugSet = new Set(piFavoriteModelSlugs);
+  const primeFavoriteModelSlugSet = new Set(primeFavoriteModelSlugs);
   const favoriteModelSlugSets = {
     cursor: cursorFavoriteModelSlugSet,
     opencode: openCodeFavoriteModelSlugSet,
     pi: piFavoriteModelSlugSet,
+    prime: primeFavoriteModelSlugSet,
   };
   const handleModelChange = (provider: ProviderKind, value: string) => {
     if (props.disabled) return;
@@ -256,7 +271,9 @@ export const ProviderModelMenuItems = function ProviderModelMenuItems(
         ? setCursorFavoriteModelSlugs
         : provider === "pi"
           ? setPiFavoriteModelSlugs
-          : setOpenCodeFavoriteModelSlugs;
+          : provider === "prime"
+            ? setPrimeFavoriteModelSlugs
+            : setOpenCodeFavoriteModelSlugs;
     setFavoriteModelSlugs((current) => toggleFavoriteModelSlug(current, slug));
   };
 
@@ -279,7 +296,8 @@ export const ProviderModelMenuItems = function ProviderModelMenuItems(
       (provider === "opencode" ||
         provider === "cursor" ||
         provider === "devin" ||
-        provider === "pi") &&
+        provider === "pi" ||
+        provider === "prime") &&
       providerOptions.length >= SEARCHABLE_MODEL_PICKER_THRESHOLD;
     const normalizedModelSearchQuery = deferredModelSearchQuery.trim().toLowerCase();
     const filteredOptions =
@@ -323,8 +341,8 @@ export const ProviderModelMenuItems = function ProviderModelMenuItems(
         </MenuRadioGroup>
       ) : (
         <div className="px-2 py-2 text-muted-foreground text-sm">
-          {provider === "pi" && normalizedModelSearchQuery.length === 0
-            ? "No Pi models found"
+          {(provider === "pi" || provider === "prime") && normalizedModelSearchQuery.length === 0
+            ? `No ${PROVIDER_DISPLAY_NAMES[provider]} models found`
             : "No matches"}
         </div>
       );

@@ -132,6 +132,16 @@ export const PiModelOptions = Schema.Struct({
 });
 export type PiModelOptions = typeof PiModelOptions.Type;
 
+// Prime Agent is a Pi-lineage harness: it exposes the same thinking levels and
+// selects the model at process start via `prime-agent --mode acp --model provider/id:level`.
+export const PRIME_THINKING_LEVEL_OPTIONS = PI_THINKING_LEVEL_OPTIONS;
+export type PrimeThinkingLevel = (typeof PRIME_THINKING_LEVEL_OPTIONS)[number];
+
+export const PrimeModelOptions = Schema.Struct({
+  thinkingLevel: Schema.optional(Schema.Literals(PRIME_THINKING_LEVEL_OPTIONS)),
+});
+export type PrimeModelOptions = typeof PrimeModelOptions.Type;
+
 export const CursorModelOptions = Schema.Struct({
   reasoningEffort: Schema.optional(TrimmedNonEmptyString),
   fastMode: Schema.optional(Schema.Boolean),
@@ -172,6 +182,7 @@ export const ProviderModelOptions = Schema.Struct({
   droid: Schema.optional(DroidModelOptions),
   opencode: Schema.optional(OpenCodeModelOptions),
   pi: Schema.optional(PiModelOptions),
+  prime: Schema.optional(PrimeModelOptions),
 });
 export type ProviderModelOptions = typeof ProviderModelOptions.Type;
 
@@ -880,6 +891,8 @@ export const MODEL_OPTIONS_BY_PROVIDER = {
   ],
   // Pi discovery owns the live catalog, including auth-gated Anthropic models.
   pi: [],
+  // Prime Agent discovery owns the live catalog (every provider its credentials unlock).
+  prime: [],
   cursor: [
     {
       // Cursor exposes auto as the `default` model id over ACP; the adapter maps it.
@@ -1116,7 +1129,7 @@ export type ModelOptionsByProvider = typeof MODEL_OPTIONS_BY_PROVIDER;
 type BuiltInModelSlug = (typeof MODEL_OPTIONS_BY_PROVIDER)[ProviderKind][number]["slug"];
 export type ModelSlug = BuiltInModelSlug | (string & {});
 
-export type ProviderWithDefaultModel = Exclude<ProviderKind, "pi">;
+export type ProviderWithDefaultModel = Exclude<ProviderKind, "pi" | "prime">;
 
 export const DEFAULT_MODEL_BY_PROVIDER: Record<ProviderWithDefaultModel, ModelSlug> = {
   codex: "gpt-5.5",
@@ -1286,6 +1299,7 @@ export const MODEL_SLUG_ALIASES_BY_PROVIDER: Record<ProviderKind, Record<string,
   },
   opencode: {},
   pi: {},
+  prime: {},
   devin: {
     adaptive: "adaptive",
     auto: "adaptive",
@@ -1342,4 +1356,5 @@ export const PROVIDER_DISPLAY_NAMES: Record<ProviderKind, string> = {
   droid: "Droid",
   opencode: "OpenCode",
   pi: "Pi",
+  prime: "Prime",
 };

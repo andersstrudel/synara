@@ -214,6 +214,13 @@ function getProviderStateFromCapabilities(
       normalizedOptions = normalizePiModelOptions(providerOptions);
       break;
     }
+    case "prime": {
+      const providerOptions = modelOptions?.prime;
+      rawEffort = trimOrNull(providerOptions?.thinkingLevel);
+      // Prime shares Pi's thinking-level ladder, so the Pi normalizer applies verbatim.
+      normalizedOptions = normalizePiModelOptions(providerOptions);
+      break;
+    }
     case "devin": {
       const providerOptions = modelOptions?.devin;
       rawEffort = trimOrNull(providerOptions?.reasoningEffort);
@@ -345,6 +352,11 @@ const composerProviderRegistry: Record<ProviderKind, ProviderRegistryEntry> = {
     getState: (input) => getProviderStateFromCapabilities(input),
     renderTraitsMenuContent: (input) => renderTraitsMenuContentForProvider("pi", input),
     renderTraitsPicker: (input) => renderTraitsPickerForProvider("pi", input),
+  },
+  prime: {
+    getState: (input) => getProviderStateFromCapabilities(input),
+    renderTraitsMenuContent: (input) => renderTraitsMenuContentForProvider("prime", input),
+    renderTraitsPicker: (input) => renderTraitsPickerForProvider("prime", input),
   },
 };
 

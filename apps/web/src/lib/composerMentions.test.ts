@@ -104,6 +104,14 @@ describe("composer mention reference filtering", () => {
     expect(filterPromptSkillReferences("Use /planner", [skill], "pi")).toEqual([]);
     expect(filterPromptSkillReferences("Use /skill:planner", [skill], "pi")).toEqual([skill]);
   });
+
+  it("uses prime's explicit skill prefix when filtering prime skill references", () => {
+    const skill = { name: "planner", path: "/skills/planner/SKILL.md" };
+
+    expect(filterPromptSkillReferences("Use /planner", [skill], "prime")).toEqual([]);
+    expect(filterPromptSkillReferences("Use $planner", [skill], "prime")).toEqual([]);
+    expect(filterPromptSkillReferences("Use /skill:planner", [skill], "prime")).toEqual([skill]);
+  });
 });
 
 describe("formatComposerMentionToken", () => {

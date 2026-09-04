@@ -83,7 +83,9 @@ type ProviderInstallTextKey =
   | "openCodeBinaryPath"
   | "openCodeServerUrl"
   | "piBinaryPath"
-  | "piAgentDir";
+  | "piAgentDir"
+  | "primeBinaryPath"
+  | "primeAgentDir";
 type ProviderInstallPasswordKey = "openCodeServerPassword";
 type ProviderInstallPasswordConfiguredKey = "openCodeServerPasswordConfigured";
 type ProviderInstallBooleanKey = "openCodeExperimentalWebSockets";
@@ -358,6 +360,45 @@ const PROVIDER_INSTALL_SETTINGS: readonly ProviderInstallSettings[] = [
         label: "Pi agent directory",
         placeholder: "Pi agent directory",
         description: "Optional custom Pi agent directory for auth, models, skills, and commands.",
+      },
+    ],
+  },
+  {
+    provider: "prime",
+    docs: [
+      {
+        label: "Install",
+        href: "https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/quickstart.md",
+      },
+      {
+        label: "Update",
+        href: "https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/usage.md",
+      },
+      {
+        label: "Config",
+        href: "https://github.com/PrimeIntellect-ai/prime-agent/blob/main/packages/coding-agent/docs/providers.md",
+      },
+    ],
+    fields: [
+      {
+        kind: "text",
+        settingsKey: "primeBinaryPath",
+        label: "Prime binary path",
+        placeholder: "prime-agent",
+        description: (
+          <>
+            Leave blank to use <code>prime-agent</code> from your PATH. Uses the models and
+            credentials configured in prime-agent (<code>/login</code>).
+          </>
+        ),
+      },
+      {
+        kind: "text",
+        settingsKey: "primeAgentDir",
+        label: "Prime agent directory",
+        placeholder: "~/.prime/agent",
+        description:
+          "Optional custom Prime agent directory for auth, models, skills, and commands.",
       },
     ],
   },

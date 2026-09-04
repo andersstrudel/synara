@@ -9,6 +9,7 @@ export const FAVORITE_MODEL_STORAGE_KEYS = {
   cursor: "synara:cursor-favourite-models:v1",
   opencode: "synara:opencode-favourite-models:v1",
   pi: "synara:pi-favourite-models:v1",
+  prime: "synara:prime-favourite-models:v1",
 } as const;
 
 const LEGACY_KILO_FAVORITE_MODEL_STORAGE_KEY = "synara:kilo-favourite-models:v1";
@@ -57,7 +58,9 @@ export function migrateLegacyKiloFavoriteModelSlugs(
 }
 
 export function supportsModelFavorites(provider: ProviderKind): provider is FavoriteModelProvider {
-  return provider === "cursor" || provider === "opencode" || provider === "pi";
+  return (
+    provider === "cursor" || provider === "opencode" || provider === "pi" || provider === "prime"
+  );
 }
 
 // Read favorite slugs for cycle order. Failures (SSR, parse errors) return [].

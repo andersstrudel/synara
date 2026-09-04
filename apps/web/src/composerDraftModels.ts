@@ -4,6 +4,7 @@
 
 import {
   GROK_REASONING_EFFORT_OPTIONS,
+  PRIME_THINKING_LEVEL_OPTIONS,
   ProviderKind,
   type ClaudeCodeEffort,
   type CodexReasoningEffort,
@@ -14,6 +15,7 @@ import {
   type ModelSelection,
   type ModelSlug,
   type PiThinkingLevel,
+  type PrimeThinkingLevel,
   type ProviderModelOptions,
 } from "@synara/contracts";
 import * as Schema from "effect/Schema";
@@ -39,11 +41,13 @@ export const COMPOSER_PROVIDER_KINDS = [
   "droid",
   "opencode",
   "pi",
+  "prime",
 ] as const satisfies readonly ProviderKind[];
 
 const isProviderKind = Schema.is(ProviderKind);
 
 const GROK_REASONING_EFFORT_SET = new Set<string>(GROK_REASONING_EFFORT_OPTIONS);
+const PRIME_THINKING_LEVEL_SET = new Set<string>(PRIME_THINKING_LEVEL_OPTIONS);
 
 export const LegacyCodexFields = Schema.Struct({
   effort: Schema.optionalKey(Schema.String),
@@ -134,6 +138,10 @@ function isGrokReasoningEffort(value: unknown): value is GrokReasoningEffort {
   return typeof value === "string" && GROK_REASONING_EFFORT_SET.has(value);
 }
 
+function isPrimeThinkingLevel(value: unknown): value is PrimeThinkingLevel {
+  return typeof value === "string" && PRIME_THINKING_LEVEL_SET.has(value);
+}
+
 export function makeModelSelection(
   provider: ProviderKind,
   model: string,
@@ -218,6 +226,14 @@ export function makeModelSelection(
           ? { options: options as Extract<ModelSelection, { provider: "pi" }>["options"] }
           : {}),
       };
+    case "prime":
+      return {
+        provider,
+        model,
+        ...(options
+          ? { options: options as Extract<ModelSelection, { provider: "prime" }>["options"] }
+          : {}),
+      };
   }
 }
 
@@ -262,6 +278,10 @@ export function normalizeProviderModelOptions(
   const piCandidate =
     candidate?.pi && typeof candidate.pi === "object"
       ? (candidate.pi as Record<string, unknown>)
+      : null;
+  const primeCandidate =
+    candidate?.prime && typeof candidate.prime === "object"
+      ? (candidate.prime as Record<string, unknown>)
       : null;
 
   const codexReasoningEffort: CodexReasoningEffort | undefined =
@@ -370,6 +390,13 @@ export function normalizeProviderModelOptions(
       ? piCandidate.thinkingLevel
       : undefined;
   const pi = piThinkingLevel !== undefined ? { thinkingLevel: piThinkingLevel } : undefined;
+  const primeThinkingLevel: PrimeThinkingLevel | undefined = isPrimeThinkingLevel(
+    primeCandidate?.thinkingLevel,
+  )
+    ? primeCandidate.thinkingLevel
+    : undefined;
+  const prime =
+    primeThinkingLevel !== undefined ? { thinkingLevel: primeThinkingLevel } : undefined;
   const devinFastMode = booleanOrUndefined(devinCandidate?.fastMode);
   const devinReasoningEffort = trimStringOrUndefined(devinCandidate?.reasoningEffort);
   const devinThinking = booleanOrUndefined(devinCandidate?.thinking);
@@ -398,7 +425,8 @@ export function normalizeProviderModelOptions(
     !grok &&
     !droid &&
     !opencode &&
-    !pi
+    !pi &&
+    !prime
   ) {
     return null;
   }
@@ -412,6 +440,7 @@ export function normalizeProviderModelOptions(
     ...(droid ? { droid } : {}),
     ...(opencode ? { opencode } : {}),
     ...(pi ? { pi } : {}),
+    ...(prime ? { prime } : {}),
   };
 }
 
@@ -483,9 +512,11 @@ export function normalizeModelSelection(
                   ? modelOptions?.opencode
                   : provider === "pi"
                     ? modelOptions?.pi
-                    : provider === "devin"
-                      ? modelOptions?.devin
-                      : undefined;
+                    : provider === "prime"
+                      ? modelOptions?.prime
+                      : provider === "devin"
+                        ? modelOptions?.devin
+                        : undefined;
   const normalizedOptions =
     provider === "antigravity" && hasLegacyAntigravityEffort
       ? {
@@ -720,7 +751,10 @@ export function deriveEffectiveComposerModelState(input: {
         activeSelection.model,
       )
     : null;
-  const unlistedDraftModel = input.selectedProvider === "pi" ? selectedDraftModel : null;
+  const unlistedDraftModel =
+    input.selectedProvider === "pi" || input.selectedProvider === "prime"
+      ? selectedDraftModel
+      : null;
   const selectedModel =
     resolveAvailableModel(activeSelection?.model) ??
     resolveAvailableModel(
@@ -788,13 +822,16 @@ export function resolvePreferredComposerModelSelection(input: {
       ? input.projectModelSelection
       : null);
   const draftSelection = input.draft?.modelSelectionByProvider?.[preferredProvider] ?? null;
+  // Pi and Prime have no static default model, so their seed falls back to Codex.
+  const fallbackProvider =
+    preferredProvider === "pi" || preferredProvider === "prime" ? "codex" : preferredProvider;
 
   return (
     (input.fresh
       ? (persistedSelection ?? draftSelection)
       : (draftSelection ?? persistedSelection)) ?? {
-      provider: preferredProvider === "pi" ? "codex" : preferredProvider,
-      model: getDefaultModel(preferredProvider === "pi" ? "codex" : preferredProvider),
+      provider: fallbackProvider,
+      model: getDefaultModel(fallbackProvider),
     }
   );
 }

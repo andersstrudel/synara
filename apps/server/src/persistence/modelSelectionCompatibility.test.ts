@@ -175,3 +175,29 @@ it("infers Devin from provider-less model slugs containing devin", () => {
     model: "devin-core",
   });
 });
+
+it("preserves canonical Prime model selections", () => {
+  assert.deepEqual(
+    normalizePersistedModelSelection({
+      provider: "prime",
+      model: "cerebras/qwen-3.8-27b",
+      options: { thinkingLevel: "high" },
+    }),
+    {
+      provider: "prime",
+      model: "cerebras/qwen-3.8-27b",
+      options: { thinkingLevel: "high" },
+    },
+  );
+});
+
+it("infers Prime from persisted instance labels and provider-less model slugs", () => {
+  assert.deepEqual(
+    normalizePersistedModelSelection({ instanceId: "Prime Agent", model: "cerebras/qwen-3.8-27b" }),
+    { provider: "prime", model: "cerebras/qwen-3.8-27b" },
+  );
+  assert.deepEqual(normalizePersistedModelSelection({ model: "prime-intellect/intellect-3" }), {
+    provider: "prime",
+    model: "prime-intellect/intellect-3",
+  });
+});

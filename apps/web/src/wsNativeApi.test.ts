@@ -320,6 +320,7 @@ describe("wsNativeApi", () => {
             customModels: [],
           },
           pi: { enabled: true, binaryPath: "pi", agentDir: "", customModels: [] },
+          prime: { enabled: true, binaryPath: "prime-agent", agentDir: "", customModels: [] },
         },
         skills: { disabled: [] },
       },

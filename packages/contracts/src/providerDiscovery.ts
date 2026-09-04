@@ -17,6 +17,7 @@ const ProviderDiscoveryKind = Schema.Literals([
   "opencode",
   "pi",
   "devin",
+  "prime",
 ]);
 
 export const ProviderSkillInterface = Schema.Struct({

@@ -37,6 +37,8 @@ const MODEL_SLUG_SET_BY_PROVIDER: Record<ProviderKind, ReadonlySet<ModelSlug>> =
   pi: new Set<ModelSlug>(),
   // Devin's built-in list is intentionally empty; its CLI supplies the live catalog.
   devin: new Set<ModelSlug>(),
+  // Prime Agent's built-in list is intentionally empty; its RPC registry supplies the live catalog.
+  prime: new Set<ModelSlug>(),
 };
 
 export interface SelectableModelOption {
@@ -65,10 +67,10 @@ export function getModelOptions(provider: ProviderKind = "codex") {
 }
 
 function hasDefaultModel(provider: ProviderKind): provider is ProviderWithDefaultModel {
-  return provider !== "pi";
+  return provider !== "pi" && provider !== "prime";
 }
 
-export function getDefaultModel(provider: "pi"): null;
+export function getDefaultModel(provider: "pi" | "prime"): null;
 export function getDefaultModel(provider?: ProviderWithDefaultModel): ModelSlug;
 export function getDefaultModel(provider: ProviderKind): ModelSlug | null;
 export function getDefaultModel(provider: ProviderKind = "codex"): ModelSlug | null {
@@ -374,7 +376,7 @@ function reasoningDescriptorId(provider: ProviderKind): string {
   if (provider === "opencode") {
     return "variant";
   }
-  if (provider === "pi") {
+  if (provider === "pi" || provider === "prime") {
     return "thinkingLevel";
   }
   return "reasoningEffort";
@@ -630,7 +632,7 @@ export function resolveModelSlug(
   provider: ProviderKind = "codex",
 ): ModelSlug | null {
   const normalized = normalizeModelSlug(model, provider);
-  if (provider === "devin" || provider === "pi") {
+  if (provider === "devin" || provider === "pi" || provider === "prime") {
     return normalized;
   }
   if (!normalized) {

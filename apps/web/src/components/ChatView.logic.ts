@@ -752,7 +752,7 @@ export function resolveThreadDetailHydration(input: {
 /**
  * Fallback model selection for a draft thread before the first server turn exists.
  * An explicit project default wins; otherwise the user's default provider is used
- * (pi has no default model, so it is skipped), then codex. The model comes from the
+ * (pi and prime have no default model, so they are skipped), then codex. The model comes from the
  * project default only when it matches the chosen provider, otherwise the provider's
  * own default.
  */
@@ -761,7 +761,9 @@ export function resolveDraftFallbackModelSelection(input: {
   settingsDefaultProvider: ProviderKind;
 }): ModelSelection {
   const settingsProvider =
-    input.settingsDefaultProvider === "pi" ? null : input.settingsDefaultProvider;
+    input.settingsDefaultProvider === "pi" || input.settingsDefaultProvider === "prime"
+      ? null
+      : input.settingsDefaultProvider;
   const provider = input.projectDefault?.provider ?? settingsProvider ?? "codex";
   const model =
     (provider === input.projectDefault?.provider ? input.projectDefault.model : null) ??

@@ -459,6 +459,7 @@ describe("composerDraftStore modelSelection", () => {
         opencode: [],
         pi: [],
         devin: [],
+        prime: [],
       },
       availableModelOptionsByProvider: {
         opencode: [{ slug: "opencode/gpt-5-nano", name: "GPT-5 Nano" }],
@@ -487,6 +488,7 @@ describe("composerDraftStore modelSelection", () => {
         opencode: [],
         pi: [],
         devin: [],
+        prime: [],
       },
       availableModelOptionsByProvider: {
         opencode: [
@@ -520,6 +522,7 @@ describe("composerDraftStore modelSelection", () => {
         opencode: [],
         pi: [],
         devin: [],
+        prime: [],
       },
       availableModelOptionsByProvider: {
         opencode: [
@@ -553,6 +556,7 @@ describe("composerDraftStore modelSelection", () => {
         opencode: [],
         pi: [],
         devin: [],
+        prime: [],
       },
       availableModelOptionsByProvider: {
         pi: [
@@ -563,6 +567,40 @@ describe("composerDraftStore modelSelection", () => {
     });
 
     expect(state.selectedModel).toBe("openai/gpt-5.5");
+  });
+
+  it("preserves a selected Prime custom model when discovery omits it", () => {
+    const state = deriveEffectiveComposerModelState({
+      draft: {
+        modelSelectionByProvider: {
+          prime: modelSelection("prime", "cerebras/qwen-3.8-27b"),
+        },
+        activeProvider: "prime",
+      },
+      selectedProvider: "prime",
+      threadModelSelection: null,
+      projectModelSelection: null,
+      customModelsByProvider: {
+        codex: [],
+        claudeAgent: [],
+        cursor: [],
+        antigravity: [],
+        grok: [],
+        droid: [],
+        opencode: [],
+        pi: [],
+        devin: [],
+        prime: [],
+      },
+      availableModelOptionsByProvider: {
+        prime: [
+          { slug: "anthropic/claude-fable-5-1", name: "Claude Fable 5.1" },
+          { slug: "openai/gpt-5.5", name: "GPT-5.5" },
+        ],
+      },
+    });
+
+    expect(state.selectedModel).toBe("cerebras/qwen-3.8-27b");
   });
 });
 

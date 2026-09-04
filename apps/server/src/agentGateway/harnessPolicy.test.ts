@@ -85,7 +85,15 @@ describe("Synara harness policy", () => {
   });
 
   it("delivers once on fresh/load/fork sessions for every scoped MCP provider", () => {
-    for (const provider of ["antigravity", "cursor", "grok", "droid", "opencode", "pi"] as const) {
+    for (const provider of [
+      "antigravity",
+      "cursor",
+      "grok",
+      "droid",
+      "opencode",
+      "pi",
+      "prime",
+    ] as const) {
       for (const lifecycle of ["fresh", "load", "fork"] as const) {
         const state: { harnessPolicyDelivered?: boolean } = {};
         const first =
